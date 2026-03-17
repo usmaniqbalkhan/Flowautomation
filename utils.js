@@ -138,35 +138,37 @@ function findSubmitButton(customSelectors) {
     }
   }
 
-  // Google Flow specific: find the submit arrow button next to the prompt input
-  // The submit button is the LAST button inside the same container as the prompt input
-  // (the → arrow button at the right side of the input bar)
+  // Google Flow specific: find the submit arrow → button in the prompt input bar.
+  // Strategy: find all buttons near the prompt input, then pick the RIGHTMOST one
+  // by screen position (the → arrow is always the furthest right element).
   const promptInput = findPromptInput([]);
   if (promptInput) {
-    // Walk up only 2-3 levels (stay within the input bar container, don't go too high)
+    const inputRect = promptInput.getBoundingClientRect();
+    // Walk up to find a container that holds both the input and the submit button
     let container = promptInput.parentElement;
-    for (let i = 0; i < 3 && container; i++) {
+    for (let i = 0; i < 4 && container; i++) {
       const btns = container.querySelectorAll('button, [role="button"]');
       if (btns.length > 0) {
-        // Get all visible, enabled buttons in this container
         const candidates = Array.from(btns).filter(
           btn => btn !== promptInput && isElementVisible(btn) && !btn.disabled
         );
 
         if (candidates.length > 0) {
-          // Pick the LAST (rightmost) button — on Flow this is the submit arrow →
-          // Exclude buttons that look like navigation (back arrows, close buttons)
-          const safeButtons = candidates.filter(btn => {
-            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-            const text = (btn.textContent || '').toLowerCase().trim();
-            // Skip buttons that are clearly navigation/menu
-            return !label.includes('back') && !label.includes('close') &&
-                   !label.includes('menu') && !label.includes('search') &&
-                   !text.includes('back') && text !== '+';
+          // Sort by X position (rightmost first) and pick the rightmost button
+          // The → submit arrow is always at the far right of the input bar
+          candidates.sort((a, b) => {
+            const aRect = a.getBoundingClientRect();
+            const bRect = b.getBoundingClientRect();
+            return bRect.right - aRect.right; // descending by right edge
           });
 
-          if (safeButtons.length > 0) {
-            return safeButtons[safeButtons.length - 1];
+          // The rightmost button is our submit arrow
+          const rightmost = candidates[0];
+          const rightRect = rightmost.getBoundingClientRect();
+
+          // Sanity check: it should be to the right of the input (not above/below)
+          if (rightRect.left >= inputRect.left) {
+            return rightmost;
           }
         }
       }
@@ -458,6 +460,72 @@ function detectGenerationActivity() {
   if (submitBtn && submitBtn.disabled) return true;
 
   return false;
+}
+
+/**
+ * Wait until generation has started after clicking submit.
+ * Detects: prompt input cleared, loading indicators, new DOM elements appearing,
+ * or the prompt input becoming empty (Flow clears it after accepting).
+ * @param {number} timeoutMs - Max time to wait for generation to start (default 10s)
+ * @returns {Promise<boolean>} true if generation detected, false if timed out
+ */
+function waitForGenerationStart(timeoutMs) {
+  timeoutMs = timeoutMs || 10000;
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    const startImageCount = getImageCountIfPossible();
+
+    // Snapshot the current prompt input value
+    const promptInput = findPromptInput([]);
+    const startInputText = promptInput ? (promptInput.textContent || promptInput.value || '').trim() : '';
+
+    const checkInterval = setInterval(() => {
+      const elapsed = Date.now() - startTime;
+
+      // 1. Check if prompt input was cleared (Flow clears it after accepting)
+      if (promptInput) {
+        const currentText = (promptInput.textContent || promptInput.value || '').trim();
+        if (startInputText.length > 0 && currentText.length === 0) {
+          clearInterval(checkInterval);
+          addLog('Generation detected: prompt input was cleared.', 'success');
+          resolve(true);
+          return;
+        }
+        // Also check if input text changed significantly (replaced with new placeholder etc.)
+        if (startInputText.length > 10 && currentText !== startInputText && currentText.length < startInputText.length / 2) {
+          clearInterval(checkInterval);
+          addLog('Generation detected: prompt input content changed.', 'success');
+          resolve(true);
+          return;
+        }
+      }
+
+      // 2. Check for loading/generation activity
+      if (detectGenerationActivity()) {
+        clearInterval(checkInterval);
+        addLog('Generation detected: loading indicators found.', 'success');
+        resolve(true);
+        return;
+      }
+
+      // 3. Check if new images appeared
+      const currentImageCount = getImageCountIfPossible();
+      if (currentImageCount > startImageCount) {
+        clearInterval(checkInterval);
+        addLog('Generation detected: new images appeared.', 'success');
+        resolve(true);
+        return;
+      }
+
+      // 4. Timeout
+      if (elapsed >= timeoutMs) {
+        clearInterval(checkInterval);
+        addLog('Generation start detection timed out — proceeding anyway.', 'warn');
+        resolve(false);
+        return;
+      }
+    }, 300);
+  });
 }
 
 /**

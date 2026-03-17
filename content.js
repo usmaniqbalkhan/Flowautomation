@@ -347,13 +347,29 @@
       addLog('Prompt submission may have failed (no button found).', 'warn');
     }
 
-    // Wait after submission for generation to start and complete
-    await sleep(2000);
+    // CRITICAL: Wait until generation has actually started before proceeding.
+    // This prevents moving to the next prompt if submit didn't work.
+    addLog('Waiting for generation to start...', 'info');
+    const generationStarted = await waitForGenerationStart(15000);
 
-    // Wait for generation to complete
+    if (!generationStarted) {
+      addLog('Generation did not start — retrying submit once...', 'warn');
+      // Re-focus and try submitting again
+      focusPromptInput(inputEl);
+      await sleep(500);
+      await submitPrompt(inputEl, submitMethod, settings.customSubmitSelectors || []);
+      await sleep(1000);
+      // Wait again for generation to start
+      const retryStarted = await waitForGenerationStart(10000);
+      if (!retryStarted) {
+        addLog('Generation still not detected after retry — moving on.', 'error');
+      }
+    }
+
+    // Wait for generation to complete (page to settle)
     const detectionStrategy = settings.detectionStrategy || 'hybrid';
     const waitTime = settings.intraPromptGapMs || 3000;
-    addLog('Waiting for page ready state...', 'info');
+    addLog('Waiting for generation to complete...', 'info');
     await waitForReadyState(waitTime, detectionStrategy);
 
     isProcessing = false;
