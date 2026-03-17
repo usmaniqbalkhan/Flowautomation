@@ -199,8 +199,12 @@ function setNativeValue(el, value) {
 
   if (isContentEditable) {
     el.focus();
-    el.innerHTML = '';
-    el.textContent = value;
+    // Use execCommand to properly notify the framework of the new value
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+    if (value) {
+      document.execCommand('insertText', false, value);
+    }
     dispatchInputEvents(el);
   } else if (tagName === 'textarea' || tagName === 'input') {
     // Use native setter to bypass React's synthetic event system
@@ -246,8 +250,9 @@ function clearPromptInput(el) {
                              el.getAttribute('contenteditable') === '';
 
   if (isContentEditable) {
-    el.innerHTML = '';
-    el.textContent = '';
+    // Use execCommand to clear — this properly notifies the framework
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
   } else {
     setNativeValue(el, '');
   }
@@ -272,6 +277,25 @@ function simulateTyping(el, text, delayMs) {
 
     const isContentEditable = el.getAttribute('contenteditable') === 'true' ||
                                el.getAttribute('contenteditable') === '';
+
+    if (isContentEditable) {
+      // For contenteditable: use execCommand('insertText') which properly
+      // triggers the framework's internal input handling (React, Lit, etc.)
+      // This is the ONLY reliable way to make frameworks see the value.
+      document.execCommand('insertText', false, text);
+
+      // Also dispatch input event for good measure
+      el.dispatchEvent(new InputEvent('input', {
+        data: text, inputType: 'insertText',
+        bubbles: true, cancelable: true
+      }));
+
+      addLog(`Used execCommand to insert text (${text.length} chars)`, 'info');
+      resolve();
+      return;
+    }
+
+    // For textarea/input: use native setter + character-by-character typing
     let currentText = '';
     let i = 0;
 
@@ -291,25 +315,14 @@ function simulateTyping(el, text, delayMs) {
         bubbles: true, cancelable: true
       }));
 
-      // Dispatch keypress
-      el.dispatchEvent(new KeyboardEvent('keypress', {
-        key: char, code: 'Key' + char.toUpperCase(),
-        charCode: char.charCodeAt(0), keyCode: char.charCodeAt(0),
-        bubbles: true, cancelable: true
-      }));
-
-      // Set value
-      if (isContentEditable) {
-        el.textContent = currentText;
+      // Set value using native setter
+      const nativeSetter =
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set ||
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      if (nativeSetter) {
+        nativeSetter.call(el, currentText);
       } else {
-        const nativeSetter =
-          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set ||
-          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-        if (nativeSetter) {
-          nativeSetter.call(el, currentText);
-        } else {
-          el.value = currentText;
-        }
+        el.value = currentText;
       }
 
       // Dispatch input event
@@ -326,7 +339,6 @@ function simulateTyping(el, text, delayMs) {
       }));
 
       i++;
-      // Add slight randomness to typing delay for realism
       const jitter = Math.floor(Math.random() * delayMs * 0.5);
       setTimeout(typeNext, delayMs + jitter);
     }
