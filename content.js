@@ -269,7 +269,7 @@
 
     settings = promptSettings || settings;
     isProcessing = true;
-    addLog(`Processing prompt ${index + 1}: "${prompt.substring(0, 50)}..."`, 'info');
+    addLog(`Processing prompt: "${prompt.substring(0, 60)}..."`, 'info');
 
     // Find input
     let inputEl = null;
@@ -321,16 +321,34 @@
       if (isStopped || runId !== currentRunId) return;
     }
 
-    // Submit
+    // Submit — try multiple times if needed
     const submitMethod = settings.submitMethod || 'auto';
-    addLog(`Submitting via method: ${submitMethod}`, 'info');
-    const submitted = await submitPrompt(inputEl, submitMethod, settings.customSubmitSelectors || []);
+    addLog('Submitting prompt...', 'info');
+
+    let submitted = false;
+    const submitRetries = settings.maxRetries || 2;
+
+    for (let attempt = 0; attempt <= submitRetries; attempt++) {
+      submitted = await submitPrompt(inputEl, submitMethod, settings.customSubmitSelectors || []);
+      if (submitted) break;
+
+      if (attempt < submitRetries) {
+        addLog('Submit attempt failed, retrying...', 'warn');
+        await sleep(1000);
+        // Re-focus input before retry
+        focusPromptInput(inputEl);
+        await sleep(300);
+      }
+    }
 
     if (submitted) {
-      addLog(`Prompt ${index + 1} submitted successfully.`, 'success');
+      addLog('Prompt submitted successfully.', 'success');
     } else {
-      addLog(`Prompt ${index + 1} submission may have failed (no button found).`, 'warn');
+      addLog('Prompt submission may have failed (no button found).', 'warn');
     }
+
+    // Wait after submission for generation to start and complete
+    await sleep(2000);
 
     // Wait for generation to complete
     const detectionStrategy = settings.detectionStrategy || 'hybrid';

@@ -105,7 +105,17 @@ function findSubmitButton(customSelectors) {
     'button[aria-label*="send" i]',
     'button[aria-label*="create" i]',
     '[role="button"][aria-label*="generate" i]',
-    '[role="button"][aria-label*="send" i]'
+    '[role="button"][aria-label*="send" i]',
+    // Google Flow specific patterns
+    'button[aria-label*="run" i]',
+    'button[aria-label*="go" i]',
+    'button[data-tooltip*="generate" i]',
+    'button[data-tooltip*="run" i]',
+    'button[jsaction*="submit"]',
+    'button[jsaction*="generate"]',
+    'button[mat-icon-button]',
+    'button.mdc-icon-button',
+    'button.mat-mdc-icon-button'
   ];
 
   for (const selector of selectors) {
@@ -120,15 +130,48 @@ function findSubmitButton(customSelectors) {
   }
 
   // Heuristic: scan all visible buttons for text matching common submit words
-  const keywords = ['generate', 'submit', 'send', 'create', 'go'];
-  const buttons = document.querySelectorAll('button, [role="button"]');
+  const keywords = ['generate', 'submit', 'send', 'create', 'go', 'run'];
+  const buttons = document.querySelectorAll('button, [role="button"], [class*="button"], [class*="btn"]');
   for (const btn of buttons) {
     const text = (btn.textContent || '').toLowerCase().trim();
     const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+    const title = (btn.getAttribute('title') || '').toLowerCase();
+    const tooltip = (btn.getAttribute('data-tooltip') || '').toLowerCase();
+    const combined = text + ' ' + ariaLabel + ' ' + title + ' ' + tooltip;
     for (const kw of keywords) {
-      if ((text.includes(kw) || ariaLabel.includes(kw)) && isElementVisible(btn) && !btn.disabled) {
+      if (combined.includes(kw) && isElementVisible(btn) && !btn.disabled) {
         return btn;
       }
+    }
+  }
+
+  // Last resort: find the nearest button to the prompt input area
+  const promptInput = findPromptInput([]);
+  if (promptInput) {
+    // Walk up to find a container, then look for buttons inside it
+    let container = promptInput.parentElement;
+    for (let i = 0; i < 5 && container; i++) {
+      const btns = container.querySelectorAll('button, [role="button"]');
+      for (const btn of btns) {
+        if (btn !== promptInput && isElementVisible(btn) && !btn.disabled) {
+          // Prefer buttons with icon (SVG inside) — common pattern for generate buttons
+          if (btn.querySelector('svg, mat-icon, img, i') || btn.classList.length > 0) {
+            return btn;
+          }
+        }
+      }
+      container = container.parentElement;
+    }
+    // If still nothing, return any button near the input
+    container = promptInput.parentElement;
+    for (let i = 0; i < 5 && container; i++) {
+      const btns = container.querySelectorAll('button, [role="button"]');
+      for (const btn of btns) {
+        if (btn !== promptInput && isElementVisible(btn) && !btn.disabled) {
+          return btn;
+        }
+      }
+      container = container.parentElement;
     }
   }
 
@@ -299,6 +342,7 @@ function simulateTyping(el, text, delayMs) {
 
 /**
  * Submit via Enter key simulation on the input element.
+ * Tries multiple Enter dispatch strategies for maximum compatibility.
  */
 function submitViaEnter(el) {
   const enterProps = {
@@ -306,27 +350,54 @@ function submitViaEnter(el) {
     keyCode: 13, which: 13, charCode: 13,
     bubbles: true, cancelable: true
   };
+
+  // Strategy 1: dispatch on the input element itself
   el.dispatchEvent(new KeyboardEvent('keydown', enterProps));
   el.dispatchEvent(new KeyboardEvent('keypress', enterProps));
   el.dispatchEvent(new KeyboardEvent('keyup', enterProps));
+
+  // Strategy 2: also dispatch on its parent container (some frameworks listen higher up)
+  if (el.parentElement) {
+    el.parentElement.dispatchEvent(new KeyboardEvent('keydown', enterProps));
+    el.parentElement.dispatchEvent(new KeyboardEvent('keypress', enterProps));
+    el.parentElement.dispatchEvent(new KeyboardEvent('keyup', enterProps));
+  }
 }
 
 /**
  * Submit via clicking the submit/generate button.
+ * Tries real click, then MouseEvent dispatch, then pointer events.
  * @param {string[]} customSelectors
  * @returns {boolean} Whether a button was found and clicked
  */
 function submitViaButton(customSelectors) {
   const btn = findSubmitButton(customSelectors);
   if (btn) {
+    // Focus the button first
+    btn.focus();
+
+    // Try native click
     btn.click();
+
+    // Also dispatch mouse events for frameworks that require them
+    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    // Also dispatch pointer events (some modern UIs use these)
+    btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+    btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
+
+    addLog('Clicked generate/submit button.', 'success');
     return true;
   }
+  addLog('No submit button found.', 'warn');
   return false;
 }
 
 /**
  * Attempt to submit the current prompt.
+ * Auto mode tries BUTTON CLICK FIRST (more reliable for Google Flow), then Enter.
  * @param {HTMLElement} el - The prompt input element
  * @param {string} method - 'enter', 'button', or 'auto'
  * @param {string[]} customSubmitSelectors
@@ -341,21 +412,20 @@ function submitPrompt(el, method, customSubmitSelectors) {
       const clicked = submitViaButton(customSubmitSelectors);
       resolve(clicked);
     } else {
-      // Auto: try Enter first, then fallback to button
-      const beforeHTML = document.body.innerHTML.length;
-      submitViaEnter(el);
+      // Auto: try BUTTON CLICK first (Google Flow uses a generate button)
+      const clicked = submitViaButton(customSubmitSelectors);
+      if (clicked) {
+        resolve(true);
+      } else {
+        // Fallback to Enter key simulation
+        addLog('No button found, falling back to Enter key...', 'info');
+        submitViaEnter(el);
 
-      // Wait 1.5s to see if DOM changed (indicating Enter worked)
-      setTimeout(() => {
-        const afterHTML = document.body.innerHTML.length;
-        if (Math.abs(afterHTML - beforeHTML) > 50) {
+        // Wait 1.5s to check if Enter worked
+        setTimeout(() => {
           resolve(true);
-        } else {
-          // Fallback to button click
-          const clicked = submitViaButton(customSubmitSelectors);
-          resolve(clicked);
-        }
-      }, 1500);
+        }, 1500);
+      }
     }
   });
 }

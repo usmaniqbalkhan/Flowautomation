@@ -171,7 +171,7 @@ async function sendNextPrompt() {
   }
 
   const prompt = state.prompts[state.currentIndex];
-  await addLogEntry(`Sending prompt ${state.currentIndex + 1}/${state.prompts.length}`, 'info');
+  await addLogEntry('Sending next prompt...', 'info');
 
   const response = await sendToContent(state.activeTabId, {
     action: 'PROCESS_PROMPT',
@@ -205,7 +205,7 @@ async function handlePromptDone(msg) {
   const batchSize = state.settings.batchSize || 4;
   const batchCooldownMs = state.settings.batchCooldownMs || 60000;
 
-  await addLogEntry(`Prompt ${newIndex}/${state.prompts.length} completed.`, 'success');
+  await addLogEntry('Prompt completed.', 'success');
 
   // Check if all done
   if (newIndex >= state.prompts.length) {
@@ -224,7 +224,7 @@ async function handlePromptDone(msg) {
       status: 'waiting_cooldown',
       countdownEnd: countdownEnd
     });
-    await addLogEntry(`Batch of ${batchSize} completed. Cooling down for ${batchCooldownMs / 1000}s...`, 'info');
+    await addLogEntry(`Batch completed. Cooling down for ${batchCooldownMs / 1000}s...`, 'info');
 
     // Set alarm for cooldown
     chrome.alarms.create(ALARM_BATCH_COOLDOWN, {
@@ -251,7 +251,7 @@ async function handlePromptError(msg) {
   const state = await loadState();
   if (msg.runId !== state.runId) return;
 
-  await addLogEntry(`Error on prompt ${msg.index + 1}: ${msg.error}`, 'error');
+  await addLogEntry(`Prompt error: ${msg.error}`, 'error');
   await saveState({ status: 'error', lastError: msg.error });
   await updateContentOverlay({ ...state, status: 'error' });
 }
@@ -398,7 +398,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               await sendToContent(state.activeTabId, { action: 'SKIP' });
             }
             const newIndex = state.currentIndex + 1;
-            await addLogEntry(`Skipped prompt ${state.currentIndex + 1}.`, 'info');
+            await addLogEntry('Skipped current prompt.', 'info');
 
             if (newIndex >= state.prompts.length) {
               await saveState({ currentIndex: newIndex, status: 'completed' });
