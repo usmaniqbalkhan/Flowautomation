@@ -106,16 +106,9 @@ function findSubmitButton(customSelectors) {
     'button[aria-label*="create" i]',
     '[role="button"][aria-label*="generate" i]',
     '[role="button"][aria-label*="send" i]',
-    // Google Flow specific patterns
     'button[aria-label*="run" i]',
-    'button[aria-label*="go" i]',
     'button[data-tooltip*="generate" i]',
-    'button[data-tooltip*="run" i]',
-    'button[jsaction*="submit"]',
-    'button[jsaction*="generate"]',
-    'button[mat-icon-button]',
-    'button.mdc-icon-button',
-    'button.mat-mdc-icon-button'
+    'button[data-tooltip*="run" i]'
   ];
 
   for (const selector of selectors) {
@@ -130,8 +123,8 @@ function findSubmitButton(customSelectors) {
   }
 
   // Heuristic: scan all visible buttons for text matching common submit words
-  const keywords = ['generate', 'submit', 'send', 'create', 'go', 'run'];
-  const buttons = document.querySelectorAll('button, [role="button"], [class*="button"], [class*="btn"]');
+  const keywords = ['generate', 'submit', 'send', 'create'];
+  const buttons = document.querySelectorAll('button, [role="button"]');
   for (const btn of buttons) {
     const text = (btn.textContent || '').toLowerCase().trim();
     const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
@@ -145,30 +138,36 @@ function findSubmitButton(customSelectors) {
     }
   }
 
-  // Last resort: find the nearest button to the prompt input area
+  // Google Flow specific: find the submit arrow button next to the prompt input
+  // The submit button is the LAST button inside the same container as the prompt input
+  // (the → arrow button at the right side of the input bar)
   const promptInput = findPromptInput([]);
   if (promptInput) {
-    // Walk up to find a container, then look for buttons inside it
+    // Walk up only 2-3 levels (stay within the input bar container, don't go too high)
     let container = promptInput.parentElement;
-    for (let i = 0; i < 5 && container; i++) {
+    for (let i = 0; i < 3 && container; i++) {
       const btns = container.querySelectorAll('button, [role="button"]');
-      for (const btn of btns) {
-        if (btn !== promptInput && isElementVisible(btn) && !btn.disabled) {
-          // Prefer buttons with icon (SVG inside) — common pattern for generate buttons
-          if (btn.querySelector('svg, mat-icon, img, i') || btn.classList.length > 0) {
-            return btn;
+      if (btns.length > 0) {
+        // Get all visible, enabled buttons in this container
+        const candidates = Array.from(btns).filter(
+          btn => btn !== promptInput && isElementVisible(btn) && !btn.disabled
+        );
+
+        if (candidates.length > 0) {
+          // Pick the LAST (rightmost) button — on Flow this is the submit arrow →
+          // Exclude buttons that look like navigation (back arrows, close buttons)
+          const safeButtons = candidates.filter(btn => {
+            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+            const text = (btn.textContent || '').toLowerCase().trim();
+            // Skip buttons that are clearly navigation/menu
+            return !label.includes('back') && !label.includes('close') &&
+                   !label.includes('menu') && !label.includes('search') &&
+                   !text.includes('back') && text !== '+';
+          });
+
+          if (safeButtons.length > 0) {
+            return safeButtons[safeButtons.length - 1];
           }
-        }
-      }
-      container = container.parentElement;
-    }
-    // If still nothing, return any button near the input
-    container = promptInput.parentElement;
-    for (let i = 0; i < 5 && container; i++) {
-      const btns = container.querySelectorAll('button, [role="button"]');
-      for (const btn of btns) {
-        if (btn !== promptInput && isElementVisible(btn) && !btn.disabled) {
-          return btn;
         }
       }
       container = container.parentElement;
@@ -351,17 +350,10 @@ function submitViaEnter(el) {
     bubbles: true, cancelable: true
   };
 
-  // Strategy 1: dispatch on the input element itself
+  // Dispatch on the input element — bubbles:true lets parent frameworks catch it
   el.dispatchEvent(new KeyboardEvent('keydown', enterProps));
   el.dispatchEvent(new KeyboardEvent('keypress', enterProps));
   el.dispatchEvent(new KeyboardEvent('keyup', enterProps));
-
-  // Strategy 2: also dispatch on its parent container (some frameworks listen higher up)
-  if (el.parentElement) {
-    el.parentElement.dispatchEvent(new KeyboardEvent('keydown', enterProps));
-    el.parentElement.dispatchEvent(new KeyboardEvent('keypress', enterProps));
-    el.parentElement.dispatchEvent(new KeyboardEvent('keyup', enterProps));
-  }
 }
 
 /**
@@ -373,20 +365,12 @@ function submitViaEnter(el) {
 function submitViaButton(customSelectors) {
   const btn = findSubmitButton(customSelectors);
   if (btn) {
-    // Focus the button first
-    btn.focus();
+    // Log what button we found for debugging
+    const btnInfo = btn.getAttribute('aria-label') || btn.textContent?.trim().substring(0, 30) || btn.tagName;
+    addLog(`Found submit button: "${btnInfo}"`, 'info');
 
-    // Try native click
+    // Use native click — simplest and most reliable
     btn.click();
-
-    // Also dispatch mouse events for frameworks that require them
-    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-
-    // Also dispatch pointer events (some modern UIs use these)
-    btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
-    btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
 
     addLog('Clicked generate/submit button.', 'success');
     return true;
