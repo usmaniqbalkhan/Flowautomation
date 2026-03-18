@@ -1,0 +1,1377 @@
+/* ============================================================
+   SIDE PANEL STYLES — Auto Flow (Google Flow Prompt Automation)
+   Injected into host page via content script.
+   All rules scoped under #gflow-panel or prefixed with .gflow-
+   to avoid collisions with host-page styles.
+   ============================================================ */
+
+/* ------------------------------------------------------------
+   0. RESET — scoped to the panel
+   ------------------------------------------------------------ */
+#gflow-panel *,
+#gflow-panel *::before,
+#gflow-panel *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ------------------------------------------------------------
+   1. PANEL CONTAINER
+   ------------------------------------------------------------ */
+#gflow-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 380px;
+  height: 100vh;
+  z-index: 999998;
+  display: flex;
+  flex-direction: column;
+  background: #1a1a2e;
+  border-left: 1px solid #2a2a4a;
+  color: #e0e0e0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.35);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 0.2s ease;
+  overflow: hidden;
+}
+
+/* Collapsed state — slide off-screen */
+#gflow-panel.gflow-collapsed {
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------
+   2. FLOATING TOGGLE BUTTON (visible when panel is collapsed)
+   ------------------------------------------------------------ */
+#gflow-panel-toggle {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  z-index: 999999;
+  width: 32px;
+  height: 64px;
+  background: #16213e;
+  border: 1px solid #2a2a4a;
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  color: #4ecca3;
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: -2px 0 10px rgba(0, 0, 0, 0.3);
+  transition: background 0.15s ease, width 0.15s ease;
+}
+
+#gflow-panel-toggle:hover {
+  background: #1e2a4a;
+  width: 38px;
+}
+
+#gflow-panel-toggle.gflow-hidden {
+  display: none;
+}
+
+/* ------------------------------------------------------------
+   3. HEADER
+   ------------------------------------------------------------ */
+.gflow-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #0d1117;
+  border-bottom: 1px solid #2a2a4a;
+  flex-shrink: 0;
+  min-height: 48px;
+}
+
+.gflow-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gflow-header-logo {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  object-fit: contain;
+}
+
+.gflow-header-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #f0f0f0;
+  letter-spacing: 0.2px;
+}
+
+.gflow-header-version {
+  font-size: 10px;
+  color: #555;
+  margin-left: 4px;
+  font-weight: 400;
+}
+
+.gflow-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.gflow-header-btn {
+  width: 30px;
+  height: 30px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #888;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.gflow-header-btn:hover {
+  background: #16213e;
+  color: #e0e0e0;
+  border-color: #2a2a4a;
+}
+
+.gflow-header-btn.gflow-pinned {
+  color: #4ecca3;
+  background: rgba(78, 204, 163, 0.1);
+  border-color: rgba(78, 204, 163, 0.25);
+}
+
+/* ------------------------------------------------------------
+   4. TAB BAR
+   ------------------------------------------------------------ */
+.gflow-tabs {
+  display: flex;
+  background: #0d1117;
+  border-bottom: 1px solid #2a2a4a;
+  flex-shrink: 0;
+}
+
+.gflow-tab {
+  flex: 1;
+  padding: 9px 0;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #666;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  cursor: pointer;
+  text-align: center;
+  transition: color 0.15s, border-color 0.2s, background 0.15s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.gflow-tab:hover {
+  color: #aaa;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.gflow-tab.gflow-tab-active {
+  color: #4ecca3;
+  border-bottom-color: #4ecca3;
+}
+
+.gflow-tab-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* ------------------------------------------------------------
+   5. TAB CONTENT — scrollable body
+   ------------------------------------------------------------ */
+.gflow-tab-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px;
+  display: none;
+}
+
+.gflow-tab-content.gflow-tab-active {
+  display: block;
+}
+
+/* ------------------------------------------------------------
+   6. CARDS — reusable section wrapper
+   ------------------------------------------------------------ */
+.gflow-card {
+  background: #16213e;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.gflow-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.gflow-card-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.gflow-card-title-icon {
+  margin-right: 5px;
+  font-size: 12px;
+}
+
+/* ------------------------------------------------------------
+   7. CONTROL TAB — Mode Selector
+   ------------------------------------------------------------ */
+.gflow-mode-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.gflow-mode-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px 8px;
+  background: #0d1b2a;
+  border: 2px solid #2a2a4a;
+  border-radius: 10px;
+  color: #999;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  transition: border-color 0.2s, color 0.2s, background 0.2s,
+              box-shadow 0.2s;
+}
+
+.gflow-mode-btn:hover {
+  border-color: #4ecca3;
+  color: #ccc;
+  background: #0f2035;
+}
+
+.gflow-mode-btn.gflow-mode-active {
+  border-color: #4ecca3;
+  color: #4ecca3;
+  background: rgba(78, 204, 163, 0.08);
+  box-shadow: 0 0 12px rgba(78, 204, 163, 0.12);
+}
+
+.gflow-mode-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+
+/* ------------------------------------------------------------
+   8. CONTROL TAB — Input / Prompt Area
+   ------------------------------------------------------------ */
+.gflow-textarea {
+  width: 100%;
+  min-height: 80px;
+  max-height: 200px;
+  padding: 8px 10px;
+  background: #0d1b2a;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  transition: border-color 0.15s;
+}
+
+.gflow-textarea:focus {
+  border-color: #4ecca3;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(78, 204, 163, 0.15);
+}
+
+.gflow-textarea::placeholder {
+  color: #555;
+}
+
+.gflow-import-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* ------------------------------------------------------------
+   9. CONTROL TAB — Flow Config (dropdowns row)
+   ------------------------------------------------------------ */
+.gflow-config-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+}
+
+.gflow-config-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.gflow-config-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+/* ------------------------------------------------------------
+   10. CONTROL TAB — Prompt Table
+   ------------------------------------------------------------ */
+.gflow-prompt-table-wrap {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+}
+
+.gflow-prompt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.gflow-prompt-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.gflow-prompt-table th {
+  background: #0d1117;
+  color: #888;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-size: 10px;
+  padding: 7px 8px;
+  text-align: left;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.gflow-prompt-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(42, 42, 74, 0.5);
+  color: #ccc;
+  vertical-align: middle;
+}
+
+.gflow-prompt-table tbody tr:hover {
+  background: rgba(78, 204, 163, 0.04);
+}
+
+.gflow-prompt-table .col-num {
+  width: 36px;
+  text-align: center;
+  color: #555;
+  font-weight: 600;
+}
+
+.gflow-prompt-table .col-prompt {
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gflow-prompt-table .col-status {
+  width: 80px;
+  text-align: center;
+}
+
+/* ------------------------------------------------------------
+   11. CONTROL TAB — Queue Controls
+   ------------------------------------------------------------ */
+.gflow-queue-controls {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.gflow-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+}
+
+.gflow-toggle-row + .gflow-toggle-row {
+  border-top: 1px solid rgba(42, 42, 74, 0.5);
+}
+
+.gflow-toggle-label {
+  font-size: 12px;
+  color: #bbb;
+}
+
+/* ------------------------------------------------------------
+   12. GALLERY TAB — Run Status Banner
+   ------------------------------------------------------------ */
+.gflow-run-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #0d1b2a;
+  border-radius: 8px;
+  margin-bottom: 10px;
+}
+
+.gflow-run-banner-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.gflow-run-banner-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.gflow-run-banner-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e0e0e0;
+  margin-bottom: 4px;
+}
+
+/* Progress bar */
+.gflow-progress-wrap {
+  position: relative;
+  height: 18px;
+  background: #0d1117;
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.gflow-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #0f3460, #4ecca3);
+  border-radius: 9px;
+  transition: width 0.4s ease;
+}
+
+.gflow-progress-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------
+   13. GALLERY TAB — Failed Tasks
+   ------------------------------------------------------------ */
+.gflow-failed-section {
+  background: rgba(231, 76, 60, 0.08);
+  border: 1px solid rgba(231, 76, 60, 0.2);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.gflow-failed-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #e74c3c;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+/* ------------------------------------------------------------
+   14. GALLERY TAB — View Controls
+   ------------------------------------------------------------ */
+.gflow-gallery-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.gflow-segmented {
+  display: inline-flex;
+  background: #0d1117;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #2a2a4a;
+}
+
+.gflow-segmented-btn {
+  padding: 5px 12px;
+  background: transparent;
+  border: none;
+  color: #666;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.gflow-segmented-btn:hover {
+  color: #aaa;
+}
+
+.gflow-segmented-btn.gflow-seg-active {
+  background: #16213e;
+  color: #4ecca3;
+}
+
+.gflow-size-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 60px;
+  height: 4px;
+  background: #2a2a4a;
+  border-radius: 2px;
+  outline: none;
+}
+
+.gflow-size-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: #4ecca3;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid #1a1a2e;
+}
+
+/* ------------------------------------------------------------
+   15. GALLERY TAB — Image Grid
+   ------------------------------------------------------------ */
+.gflow-image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.gflow-image-cell {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0d1117;
+  border: 1px solid #2a2a4a;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.gflow-image-cell:hover {
+  border-color: #4ecca3;
+  box-shadow: 0 0 8px rgba(78, 204, 163, 0.15);
+}
+
+.gflow-image-cell img,
+.gflow-image-cell video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.gflow-image-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 4px 6px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
+  font-size: 9px;
+  color: #ccc;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.gflow-image-cell:hover .gflow-image-overlay {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------
+   16. GALLERY TAB — Live Queue Table
+   ------------------------------------------------------------ */
+.gflow-queue-table-wrap {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+}
+
+.gflow-queue-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.gflow-queue-table th {
+  background: #0d1117;
+  color: #888;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-size: 10px;
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid #2a2a4a;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.gflow-queue-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid rgba(42, 42, 74, 0.4);
+  color: #ccc;
+}
+
+.gflow-queue-table tbody tr:hover {
+  background: rgba(78, 204, 163, 0.04);
+}
+
+/* ------------------------------------------------------------
+   17. SETTINGS TAB — Form Groups
+   ------------------------------------------------------------ */
+.gflow-form-group {
+  margin-bottom: 12px;
+}
+
+.gflow-form-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-bottom: 5px;
+}
+
+.gflow-form-hint {
+  font-size: 10px;
+  color: #555;
+  margin-top: 3px;
+  line-height: 1.35;
+}
+
+.gflow-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+  align-items: start;
+}
+
+.gflow-form-divider {
+  border: none;
+  border-top: 1px solid #2a2a4a;
+  margin: 14px 0;
+}
+
+/* ------------------------------------------------------------
+   18. LOGS TAB
+   ------------------------------------------------------------ */
+.gflow-log-area {
+  background: #0d1117;
+  border-radius: 6px;
+  padding: 8px;
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
+  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo',
+    monospace;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.gflow-log-entry {
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(42, 42, 74, 0.3);
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.gflow-log-time {
+  color: #444;
+  font-size: 10px;
+  flex-shrink: 0;
+  min-width: 56px;
+}
+
+.gflow-log-level {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+  min-width: 40px;
+}
+
+.gflow-log-msg {
+  color: #b0b0b0;
+  word-break: break-word;
+}
+
+/* Log level colors */
+.gflow-log-entry.gflow-log-debug .gflow-log-level { color: #555; }
+.gflow-log-entry.gflow-log-debug .gflow-log-msg   { color: #777; }
+
+.gflow-log-entry.gflow-log-info .gflow-log-level   { color: #3498db; }
+.gflow-log-entry.gflow-log-info .gflow-log-msg     { color: #b0b0b0; }
+
+.gflow-log-entry.gflow-log-success .gflow-log-level { color: #4ecca3; }
+.gflow-log-entry.gflow-log-success .gflow-log-msg   { color: #4ecca3; }
+
+.gflow-log-entry.gflow-log-warn .gflow-log-level   { color: #f0a500; }
+.gflow-log-entry.gflow-log-warn .gflow-log-msg     { color: #f0c040; }
+
+.gflow-log-entry.gflow-log-error .gflow-log-level  { color: #e74c3c; }
+.gflow-log-entry.gflow-log-error .gflow-log-msg    { color: #e74c3c; }
+
+.gflow-log-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.gflow-log-filter {
+  display: flex;
+  gap: 4px;
+}
+
+.gflow-log-filter-btn {
+  padding: 3px 8px;
+  background: transparent;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  color: #666;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.gflow-log-filter-btn:hover {
+  border-color: #4ecca3;
+  color: #aaa;
+}
+
+.gflow-log-filter-btn.gflow-filter-active {
+  background: rgba(78, 204, 163, 0.1);
+  border-color: #4ecca3;
+  color: #4ecca3;
+}
+
+/* ------------------------------------------------------------
+   19. COMMON — Buttons
+   ------------------------------------------------------------ */
+.gflow-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 14px;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  background: #0f3460;
+  color: #e0e0e0;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s,
+              box-shadow 0.15s, opacity 0.15s;
+  text-decoration: none;
+  line-height: 1.3;
+}
+
+.gflow-btn:hover:not(:disabled) {
+  background: #1a5276;
+  border-color: #3a4a6a;
+}
+
+.gflow-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.gflow-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Primary — teal */
+.gflow-btn-primary {
+  background: #0a6847;
+  border-color: #0a6847;
+  color: #fff;
+}
+.gflow-btn-primary:hover:not(:disabled) {
+  background: #0d8a5f;
+  border-color: #0d8a5f;
+  box-shadow: 0 0 10px rgba(78, 204, 163, 0.2);
+}
+
+/* Secondary — dark subtle */
+.gflow-btn-secondary {
+  background: #16213e;
+  border-color: #2a2a4a;
+  color: #aaa;
+}
+.gflow-btn-secondary:hover:not(:disabled) {
+  background: #1e2a4a;
+  color: #ddd;
+}
+
+/* Danger — red */
+.gflow-btn-danger {
+  background: #6d0a0a;
+  border-color: #6d0a0a;
+  color: #e74c3c;
+}
+.gflow-btn-danger:hover:not(:disabled) {
+  background: #8a1010;
+  border-color: #8a1010;
+  box-shadow: 0 0 10px rgba(231, 76, 60, 0.15);
+}
+
+/* Warning — yellow / "Scan All" style */
+.gflow-btn-warning {
+  background: #6d4c00;
+  border-color: #6d4c00;
+  color: #f0c040;
+}
+.gflow-btn-warning:hover:not(:disabled) {
+  background: #8a6000;
+  border-color: #8a6000;
+  box-shadow: 0 0 10px rgba(240, 192, 64, 0.15);
+}
+
+/* Small variant */
+.gflow-btn-sm {
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 4px;
+}
+
+/* Icon-only variant */
+.gflow-btn-icon {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  font-size: 14px;
+}
+
+/* Full-width */
+.gflow-btn-block {
+  width: 100%;
+}
+
+/* ------------------------------------------------------------
+   20. COMMON — Status Badges
+   ------------------------------------------------------------ */
+.gflow-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* Pending / Idle — gray */
+.gflow-badge-pending,
+.gflow-badge-idle {
+  background: #2a2a3a;
+  color: #888;
+}
+
+/* Queued — dark blue */
+.gflow-badge-queued {
+  background: #0d2b4a;
+  color: #5ba3d9;
+}
+
+/* Generating / Cooldown — blue */
+.gflow-badge-generating,
+.gflow-badge-cooldown {
+  background: #0a2d4a;
+  color: #3498db;
+}
+
+/* Generating — animated pulse */
+.gflow-badge-generating {
+  animation: gflow-pulse 1.5s ease-in-out infinite;
+}
+
+/* Generated / Success — green */
+.gflow-badge-generated,
+.gflow-badge-success {
+  background: #0a4d3a;
+  color: #4ecca3;
+}
+
+/* Failed / Error — red */
+.gflow-badge-failed,
+.gflow-badge-error {
+  background: #4d0a0a;
+  color: #e74c3c;
+}
+
+/* Skipped — muted */
+.gflow-badge-skipped {
+  background: #2a2a3a;
+  color: #777;
+  text-decoration: line-through;
+}
+
+/* Warning / Paused — orange */
+.gflow-badge-warning,
+.gflow-badge-paused {
+  background: #4a3600;
+  color: #f0a500;
+}
+
+/* Running — bright teal */
+.gflow-badge-running {
+  background: #0a4d3a;
+  color: #4ecca3;
+  animation: gflow-pulse 1.5s ease-in-out infinite;
+}
+
+/* ------------------------------------------------------------
+   21. COMMON — Toggle Switch
+   ------------------------------------------------------------ */
+.gflow-toggle {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.gflow-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.gflow-toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: #2a2a4a;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.gflow-toggle-slider::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #888;
+  border-radius: 50%;
+  transition: transform 0.2s, background 0.2s;
+}
+
+.gflow-toggle input:checked + .gflow-toggle-slider {
+  background: rgba(78, 204, 163, 0.3);
+}
+
+.gflow-toggle input:checked + .gflow-toggle-slider::before {
+  transform: translateX(16px);
+  background: #4ecca3;
+}
+
+.gflow-toggle input:focus-visible + .gflow-toggle-slider {
+  box-shadow: 0 0 0 2px rgba(78, 204, 163, 0.3);
+}
+
+/* ------------------------------------------------------------
+   22. COMMON — Select / Dropdown
+   ------------------------------------------------------------ */
+.gflow-select {
+  width: 100%;
+  padding: 6px 28px 6px 8px;
+  background: #0d1b2a;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23666'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 10px 6px;
+  transition: border-color 0.15s;
+}
+
+.gflow-select:hover {
+  border-color: #3a4a6a;
+}
+
+.gflow-select:focus {
+  border-color: #4ecca3;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(78, 204, 163, 0.15);
+}
+
+.gflow-select option {
+  background: #0d1b2a;
+  color: #e0e0e0;
+}
+
+/* ------------------------------------------------------------
+   23. COMMON — Input
+   ------------------------------------------------------------ */
+.gflow-input {
+  width: 100%;
+  padding: 6px 8px;
+  background: #0d1b2a;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-family: inherit;
+  font-size: 12px;
+  transition: border-color 0.15s;
+}
+
+.gflow-input:hover {
+  border-color: #3a4a6a;
+}
+
+.gflow-input:focus {
+  border-color: #4ecca3;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(78, 204, 163, 0.15);
+}
+
+.gflow-input::placeholder {
+  color: #555;
+}
+
+/* Number input — compact */
+.gflow-input-sm {
+  padding: 4px 6px;
+  font-size: 11px;
+  width: 60px;
+}
+
+/* ------------------------------------------------------------
+   24. COMMON — File Input
+   ------------------------------------------------------------ */
+.gflow-file-input {
+  font-size: 11px;
+  color: #888;
+  width: 100%;
+}
+
+.gflow-file-input::file-selector-button {
+  padding: 4px 10px;
+  border: 1px solid #2a2a4a;
+  background: #0f3460;
+  color: #e0e0e0;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  margin-right: 8px;
+  transition: background 0.15s;
+}
+
+.gflow-file-input::file-selector-button:hover {
+  background: #1a5276;
+}
+
+/* ------------------------------------------------------------
+   25. COMMON — Stats Cards
+   ------------------------------------------------------------ */
+.gflow-stats-row {
+  display: flex;
+  gap: 6px;
+}
+
+.gflow-stat-card {
+  flex: 1;
+  text-align: center;
+  padding: 8px 4px;
+  background: #0d1b2a;
+  border-radius: 6px;
+}
+
+.gflow-stat-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #4ecca3;
+  line-height: 1.2;
+}
+
+.gflow-stat-label {
+  font-size: 9px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-top: 2px;
+}
+
+/* Variant colors for stat values */
+.gflow-stat-value.gflow-stat-success { color: #4ecca3; }
+.gflow-stat-value.gflow-stat-fail    { color: #e74c3c; }
+.gflow-stat-value.gflow-stat-warn    { color: #f0a500; }
+.gflow-stat-value.gflow-stat-info    { color: #3498db; }
+
+/* ------------------------------------------------------------
+   26. COMMON — Countdown / Cooldown display
+   ------------------------------------------------------------ */
+.gflow-countdown {
+  text-align: center;
+  padding: 8px;
+  background: #0d2b4a;
+  border-radius: 6px;
+  margin-top: 8px;
+}
+
+.gflow-countdown-label {
+  font-size: 11px;
+  color: #5ba3d9;
+}
+
+.gflow-countdown-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: #3498db;
+  margin-left: 6px;
+}
+
+/* ------------------------------------------------------------
+   27. COMMON — Tooltip
+   ------------------------------------------------------------ */
+.gflow-tooltip {
+  position: relative;
+}
+
+.gflow-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  background: #0d1117;
+  color: #ccc;
+  font-size: 10px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  border: 1px solid #2a2a4a;
+  z-index: 10;
+}
+
+.gflow-tooltip:hover::after {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------
+   28. COMMON — Empty / Placeholder States
+   ------------------------------------------------------------ */
+.gflow-empty {
+  text-align: center;
+  padding: 24px 16px;
+  color: #555;
+  font-size: 12px;
+}
+
+.gflow-empty-icon {
+  font-size: 28px;
+  margin-bottom: 8px;
+  opacity: 0.5;
+}
+
+/* ------------------------------------------------------------
+   29. COMMON — Divider
+   ------------------------------------------------------------ */
+.gflow-divider {
+  border: none;
+  border-top: 1px solid #2a2a4a;
+  margin: 10px 0;
+}
+
+/* ------------------------------------------------------------
+   30. COMMON — Inline Row Helpers
+   ------------------------------------------------------------ */
+.gflow-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gflow-row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.gflow-row-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gflow-gap-4 { gap: 4px; }
+.gflow-gap-6 { gap: 6px; }
+
+.gflow-flex-1 { flex: 1; min-width: 0; }
+
+.gflow-mt-4 { margin-top: 4px; }
+.gflow-mt-8 { margin-top: 8px; }
+.gflow-mb-4 { margin-bottom: 4px; }
+.gflow-mb-8 { margin-bottom: 8px; }
+
+.gflow-text-muted {
+  color: #666;
+  font-size: 11px;
+}
+
+.gflow-text-sm {
+  font-size: 11px;
+}
+
+/* ------------------------------------------------------------
+   31. SCROLLBAR STYLING (panel internals)
+   ------------------------------------------------------------ */
+#gflow-panel ::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+#gflow-panel ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#gflow-panel ::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 3px;
+}
+
+#gflow-panel ::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+#gflow-panel ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox scrollbar */
+#gflow-panel * {
+  scrollbar-width: thin;
+  scrollbar-color: #333 transparent;
+}
+
+/* ------------------------------------------------------------
+   32. ANIMATIONS
+   ------------------------------------------------------------ */
+@keyframes gflow-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.6; }
+}
+
+@keyframes gflow-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes gflow-slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+@keyframes gflow-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.gflow-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #2a2a4a;
+  border-top-color: #4ecca3;
+  border-radius: 50%;
+  animation: gflow-spin 0.6s linear infinite;
+}
+
+/* ------------------------------------------------------------
+   33. MEDIA — narrow viewport fallback
+   ------------------------------------------------------------ */
+@media (max-width: 500px) {
+  #gflow-panel {
+    width: 100vw;
+    border-left: none;
+  }
+}

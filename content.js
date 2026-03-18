@@ -1,6 +1,6 @@
 /**
- * content.js — DOM automation and on-page overlay for Google Flow Prompt Automation.
- * Injected on matching Google Flow URLs alongside utils.js.
+ * content.js — DOM automation and message relay for Flow Automation v2.
+ * Handles prompt processing, API interceptor communication, and panel coordination.
  */
 
 (function () {
@@ -13,251 +13,106 @@
   let isPaused = false;
   let isStopped = false;
   let isProcessing = false;
-  let overlayEl = null;
-  let countdownInterval = null;
   let mutationObserver = null;
   let settings = {};
+  let capturedAuthContext = null;
+  let capturedApiEndpoints = {};
 
   /* ============================================================
-     OVERLAY UI
+     API INTERCEPTOR BRIDGE (MAIN world ↔ ISOLATED world)
      ============================================================ */
 
-  function createOverlay() {
-    if (overlayEl) return;
+  /**
+   * Listen for messages from api-interceptor.js running in MAIN world.
+   * Relay relevant data to background.js and panel.js.
+   */
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || typeof data.type !== 'string' || !data.type.startsWith('GFLOW_')) return;
 
-    overlayEl = document.createElement('div');
-    overlayEl.id = 'gflow-auto-overlay';
-    overlayEl.innerHTML = `
-      <div id="gflow-overlay-header">
-        <span id="gflow-overlay-title">Flow Auto</span>
-        <span id="gflow-overlay-minimize" title="Minimize">—</span>
-      </div>
-      <div id="gflow-overlay-body">
-        <div id="gflow-overlay-status">
-          <span class="gflow-label">Status:</span>
-          <span id="gflow-ov-status-val">Idle</span>
-        </div>
-        <div id="gflow-overlay-progress">
-          <span class="gflow-label">Prompt:</span>
-          <span id="gflow-ov-current">0</span> / <span id="gflow-ov-total">0</span>
-          (<span id="gflow-ov-remaining">0</span> left)
-        </div>
-        <div id="gflow-overlay-batch">
-          <span class="gflow-label">Batch:</span>
-          <span id="gflow-ov-batch">0</span> / <span id="gflow-ov-batchsize">4</span>
-        </div>
-        <div id="gflow-overlay-countdown" style="display:none;">
-          <span class="gflow-label">Next batch in:</span>
-          <span id="gflow-ov-countdown-val">0s</span>
-        </div>
-        <div id="gflow-overlay-buttons">
-          <button id="gflow-ov-pause" title="Pause">⏸</button>
-          <button id="gflow-ov-resume" title="Resume" style="display:none;">▶</button>
-          <button id="gflow-ov-skip" title="Skip">⏭</button>
-          <button id="gflow-ov-stop" title="Stop">⏹</button>
-        </div>
-      </div>
-    `;
+    switch (data.type) {
+      case 'GFLOW_AUTH_CAPTURED':
+        // Auth context captured from intercepted API calls
+        capturedAuthContext = data.authContext;
+        addLog('API auth context captured.', 'success');
+        // Store in background for persistence
+        chrome.runtime.sendMessage({
+          action: 'API_AUTH_CAPTURED',
+          authContext: data.authContext
+        });
+        break;
 
-    const style = document.createElement('style');
-    style.textContent = `
-      #gflow-auto-overlay {
-        position: fixed;
-        bottom: 120px;
-        right: 20px;
-        width: 240px;
-        background: #1a1a2e;
-        color: #e0e0e0;
-        border: 1px solid #333;
-        border-radius: 10px;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 12px;
-        z-index: 999999;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-        user-select: none;
-        transition: opacity 0.2s;
-      }
-      #gflow-auto-overlay.gflow-minimized #gflow-overlay-body {
-        display: none;
-      }
-      #gflow-overlay-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 8px 12px;
-        background: #16213e;
-        border-radius: 10px 10px 0 0;
-        cursor: move;
-        font-weight: 600;
-        font-size: 13px;
-      }
-      #gflow-overlay-minimize {
-        cursor: pointer;
-        padding: 0 4px;
-        font-size: 16px;
-        opacity: 0.7;
-      }
-      #gflow-overlay-minimize:hover { opacity: 1; }
-      #gflow-overlay-body {
-        padding: 10px 12px;
-      }
-      #gflow-overlay-body > div {
-        margin-bottom: 6px;
-      }
-      .gflow-label {
-        color: #888;
-        margin-right: 4px;
-      }
-      #gflow-ov-status-val {
-        font-weight: 600;
-        color: #4ecca3;
-      }
-      #gflow-overlay-buttons {
-        display: flex;
-        gap: 6px;
-        margin-top: 8px;
-      }
-      #gflow-overlay-buttons button {
-        flex: 1;
-        padding: 5px 0;
-        border: 1px solid #444;
-        background: #0f3460;
-        color: #e0e0e0;
-        border-radius: 5px;
-        cursor: pointer;
-        font-size: 14px;
-        transition: background 0.15s;
-      }
-      #gflow-overlay-buttons button:hover {
-        background: #1a5276;
-      }
-    `;
+      case 'GFLOW_API_REQUEST':
+        // Intercepted outgoing API request
+        if (data.url) {
+          // Track discovered endpoints
+          const urlPath = new URL(data.url, window.location.origin).pathname;
+          capturedApiEndpoints[urlPath] = {
+            method: data.method || 'POST',
+            lastSeen: Date.now()
+          };
+        }
+        break;
 
-    document.body.appendChild(style);
-    document.body.appendChild(overlayEl);
+      case 'GFLOW_API_RESPONSE':
+        // Intercepted API response — check for image URLs
+        if (data.imageUrls && data.imageUrls.length > 0) {
+          chrome.runtime.sendMessage({
+            action: 'IMAGES_CAPTURED',
+            images: data.imageUrls,
+            promptText: data.promptText || '',
+            projectId: data.projectId || ''
+          });
+          addLog(`Captured ${data.imageUrls.length} image URLs from API response.`, 'success');
+        }
+        break;
 
-    // Draggable
-    makeDraggable(overlayEl, document.getElementById('gflow-overlay-header'));
+      case 'GFLOW_SUBMIT_RESULT':
+        // Result from API-based prompt submission
+        if (data.success) {
+          addLog('API submission successful.', 'success');
+        } else {
+          addLog('API submission failed: ' + (data.error || 'unknown'), 'error');
+        }
+        break;
 
-    // Minimize toggle
-    document.getElementById('gflow-overlay-minimize').addEventListener('click', () => {
-      overlayEl.classList.toggle('gflow-minimized');
-    });
-
-    // Overlay button handlers
-    document.getElementById('gflow-ov-pause').addEventListener('click', () => {
-      chrome.runtime.sendMessage({ action: 'PAUSE' });
-    });
-    document.getElementById('gflow-ov-resume').addEventListener('click', () => {
-      chrome.runtime.sendMessage({ action: 'RESUME' });
-    });
-    document.getElementById('gflow-ov-skip').addEventListener('click', () => {
-      chrome.runtime.sendMessage({ action: 'SKIP' });
-    });
-    document.getElementById('gflow-ov-stop').addEventListener('click', () => {
-      chrome.runtime.sendMessage({ action: 'STOP' });
-    });
-  }
-
-  function makeDraggable(el, handle) {
-    let offsetX = 0, offsetY = 0, isDragging = false;
-
-    handle.addEventListener('mousedown', (e) => {
-      isDragging = true;
-      offsetX = e.clientX - el.getBoundingClientRect().left;
-      offsetY = e.clientY - el.getBoundingClientRect().top;
-      e.preventDefault();
-    });
-
-    document.addEventListener('mousemove', (e) => {
-      if (!isDragging) return;
-      el.style.left = (e.clientX - offsetX) + 'px';
-      el.style.top = (e.clientY - offsetY) + 'px';
-      el.style.right = 'auto';
-      el.style.bottom = 'auto';
-    });
-
-    document.addEventListener('mouseup', () => {
-      isDragging = false;
-    });
-  }
-
-  function updateOverlay(data) {
-    if (!overlayEl) return;
-    const statusEl = document.getElementById('gflow-ov-status-val');
-    const currentEl = document.getElementById('gflow-ov-current');
-    const totalEl = document.getElementById('gflow-ov-total');
-    const remainingEl = document.getElementById('gflow-ov-remaining');
-    const batchEl = document.getElementById('gflow-ov-batch');
-    const batchSizeEl = document.getElementById('gflow-ov-batchsize');
-    const countdownDiv = document.getElementById('gflow-overlay-countdown');
-    const countdownVal = document.getElementById('gflow-ov-countdown-val');
-    const pauseBtn = document.getElementById('gflow-ov-pause');
-    const resumeBtn = document.getElementById('gflow-ov-resume');
-
-    if (data.status) {
-      statusEl.textContent = data.status;
-      const colors = {
-        idle: '#888', running: '#4ecca3', paused: '#f0a500',
-        waiting_cooldown: '#3498db', completed: '#2ecc71', error: '#e74c3c'
-      };
-      statusEl.style.color = colors[data.status] || '#e0e0e0';
+      case 'GFLOW_ENDPOINT_DISCOVERED':
+        // New API endpoint discovered
+        addLog(`API endpoint discovered: ${data.endpoint}`, 'info');
+        capturedApiEndpoints[data.endpoint] = data.details;
+        break;
     }
-    if (data.currentIndex !== undefined && data.totalPrompts !== undefined) {
-      currentEl.textContent = data.currentIndex + 1;
-      totalEl.textContent = data.totalPrompts;
-      remainingEl.textContent = data.totalPrompts - data.currentIndex;
-    }
-    if (data.batchProgress !== undefined && data.batchSize !== undefined) {
-      batchEl.textContent = data.batchProgress;
-      batchSizeEl.textContent = data.batchSize;
-    }
+  });
 
-    // Pause/Resume visibility
-    if (data.status === 'paused') {
-      pauseBtn.style.display = 'none';
-      resumeBtn.style.display = '';
-    } else {
-      pauseBtn.style.display = '';
-      resumeBtn.style.display = 'none';
-    }
+  /**
+   * Submit a prompt via the API interceptor (MAIN world).
+   * @param {string} promptText - The prompt to submit
+   * @returns {Promise<boolean>} Whether the API submission was initiated
+   */
+  function submitViaAPI(promptText) {
+    return new Promise((resolve) => {
+      // Send message to MAIN world api-interceptor
+      window.postMessage({
+        type: 'GFLOW_SUBMIT_PROMPT',
+        prompt: promptText,
+        timestamp: Date.now()
+      }, '*');
 
-    // Countdown
-    if (data.countdownEnd) {
-      countdownDiv.style.display = '';
-      startCountdownDisplay(data.countdownEnd);
-    } else {
-      countdownDiv.style.display = 'none';
-      stopCountdownDisplay();
-    }
-  }
+      // Listen for result with timeout
+      const timeout = setTimeout(() => {
+        resolve(false);
+      }, 10000);
 
-  function startCountdownDisplay(endTimestamp) {
-    stopCountdownDisplay();
-    const countdownVal = document.getElementById('gflow-ov-countdown-val');
-    countdownInterval = setInterval(() => {
-      const remaining = Math.max(0, Math.ceil((endTimestamp - Date.now()) / 1000));
-      countdownVal.textContent = remaining + 's';
-      if (remaining <= 0) {
-        stopCountdownDisplay();
-        document.getElementById('gflow-overlay-countdown').style.display = 'none';
+      function onResult(event) {
+        if (event.data?.type === 'GFLOW_SUBMIT_RESULT') {
+          clearTimeout(timeout);
+          window.removeEventListener('message', onResult);
+          resolve(event.data.success || false);
+        }
       }
-    }, 500);
-  }
-
-  function stopCountdownDisplay() {
-    if (countdownInterval) {
-      clearInterval(countdownInterval);
-      countdownInterval = null;
-    }
-  }
-
-  function removeOverlay() {
-    stopCountdownDisplay();
-    if (overlayEl) {
-      overlayEl.remove();
-      overlayEl = null;
-    }
+      window.addEventListener('message', onResult);
+    });
   }
 
   /* ============================================================
@@ -269,8 +124,41 @@
 
     settings = promptSettings || settings;
     isProcessing = true;
-    addLog(`Processing prompt: "${prompt.substring(0, 60)}..."`, 'info');
+    addLog(`Processing prompt ${index + 1}: "${prompt.substring(0, 60)}..."`, 'info');
 
+    // Determine submission path
+    const submitPath = settings.submitPath || 'dom_first';
+
+    if (submitPath === 'api_first' || submitPath === 'api_only') {
+      // Try API submission first
+      addLog('Attempting API submission...', 'info');
+      const apiSuccess = await submitViaAPI(prompt);
+
+      if (apiSuccess) {
+        addLog('Prompt submitted via API.', 'success');
+        // Wait for generation to complete
+        await waitForGenerationComplete();
+        reportPromptDone(index, runId);
+        return;
+      }
+
+      if (submitPath === 'api_only') {
+        addLog('API submission failed and mode is API-only.', 'error');
+        reportPromptError(index, runId, 'API submission failed');
+        return;
+      }
+
+      addLog('API submission failed, falling back to DOM...', 'warn');
+    }
+
+    // DOM-based submission (dom_first or fallback from api_first)
+    await processDOMSubmission(prompt, index, runId);
+  }
+
+  /**
+   * Process prompt via DOM automation (typing + button click).
+   */
+  async function processDOMSubmission(prompt, index, runId) {
     // Find input
     let inputEl = null;
     const maxRetries = settings.maxRetries || 2;
@@ -283,19 +171,13 @@
 
     if (!inputEl) {
       addLog('Could not find prompt input after retries.', 'error');
-      isProcessing = false;
-      chrome.runtime.sendMessage({
-        action: 'PROMPT_ERROR',
-        index: index,
-        runId: runId,
-        error: 'Prompt input element not found'
-      });
+      reportPromptError(index, runId, 'Prompt input element not found');
       return;
     }
 
     addLog('Input element found.', 'success');
 
-    // Check if paused before continuing
+    // Check if paused
     if (isPaused) {
       addLog('Paused before typing.', 'info');
       await waitForUnpause();
@@ -321,7 +203,7 @@
       if (isStopped || runId !== currentRunId) return;
     }
 
-    // Submit — try multiple times if needed
+    // Submit
     const submitMethod = settings.submitMethod || 'auto';
     addLog('Submitting prompt...', 'info');
 
@@ -335,7 +217,6 @@
       if (attempt < submitRetries) {
         addLog('Submit attempt failed, retrying...', 'warn');
         await sleep(1000);
-        // Re-focus input before retry
         focusPromptInput(inputEl);
         await sleep(300);
       }
@@ -344,41 +225,62 @@
     if (submitted) {
       addLog('Prompt submitted successfully.', 'success');
     } else {
-      addLog('Prompt submission may have failed (no button found).', 'warn');
+      addLog('Prompt submission may have failed.', 'warn');
     }
 
-    // CRITICAL: Wait until generation has actually started before proceeding.
-    // This prevents moving to the next prompt if submit didn't work.
+    // Wait for generation to start
     addLog('Waiting for generation to start...', 'info');
     const generationStarted = await waitForGenerationStart(15000);
 
     if (!generationStarted) {
-      addLog('Generation did not start — retrying submit once...', 'warn');
-      // Re-focus and try submitting again
+      addLog('Generation did not start — retrying submit...', 'warn');
       focusPromptInput(inputEl);
       await sleep(500);
       await submitPrompt(inputEl, submitMethod, settings.customSubmitSelectors || []);
       await sleep(1000);
-      // Wait again for generation to start
       const retryStarted = await waitForGenerationStart(10000);
       if (!retryStarted) {
-        addLog('Generation still not detected after retry — moving on.', 'error');
+        addLog('Generation still not detected after retry.', 'error');
       }
     }
 
-    // Wait for generation to complete (page to settle)
+    // Wait for generation to complete
+    await waitForGenerationComplete();
+    reportPromptDone(index, runId);
+  }
+
+  /**
+   * Wait for generation to complete (page to settle).
+   */
+  async function waitForGenerationComplete() {
     const detectionStrategy = settings.detectionStrategy || 'hybrid';
     const waitTime = settings.intraPromptGapMs || 3000;
     addLog('Waiting for generation to complete...', 'info');
     await waitForReadyState(waitTime, detectionStrategy);
+  }
 
+  /**
+   * Report prompt completion to background.
+   */
+  function reportPromptDone(index, runId) {
     isProcessing = false;
-
-    // Report done
     chrome.runtime.sendMessage({
       action: 'PROMPT_DONE',
       index: index,
       runId: runId
+    });
+  }
+
+  /**
+   * Report prompt error to background.
+   */
+  function reportPromptError(index, runId, error) {
+    isProcessing = false;
+    chrome.runtime.sendMessage({
+      action: 'PROMPT_ERROR',
+      index: index,
+      runId: runId,
+      error: error
     });
   }
 
@@ -403,8 +305,8 @@
 
   function startMutationObserver() {
     if (mutationObserver) return;
-    mutationObserver = new MutationObserver((mutations) => {
-      // Silent observation — used by waitForReadyState via detectGenerationActivity
+    mutationObserver = new MutationObserver(() => {
+      // Silent observation — used by waitForReadyState
     });
     mutationObserver.observe(document.body, {
       childList: true, subtree: true, attributes: true
@@ -429,9 +331,6 @@
         currentRunId = msg.runId;
         isPaused = false;
         isStopped = false;
-        if (settings.overlayEnabled !== false) {
-          createOverlay();
-        }
         startMutationObserver();
         processPrompt(msg.prompt, msg.index, msg.runId, msg.settings);
         sendResponse({ ok: true });
@@ -455,48 +354,48 @@
         currentRunId = null;
         isProcessing = false;
         stopMutationObserver();
-        stopCountdownDisplay();
         addLog('Automation stopped.', 'info');
         sendResponse({ ok: true });
         break;
 
       case 'SKIP':
-        // If currently processing, signal skip (stop current then background sends next)
         if (isProcessing) {
-          isStopped = true; // Will cause processPrompt to bail
+          isStopped = true;
           setTimeout(() => { isStopped = false; }, 500);
         }
         addLog('Skipping current prompt.', 'info');
         sendResponse({ ok: true });
         break;
 
-      case 'FIND_INPUT':
+      case 'FIND_INPUT': {
         const el = findPromptInput(msg.customSelectors || []);
         sendResponse({ found: !!el, tagName: el ? el.tagName : null });
         break;
+      }
 
-      case 'UPDATE_OVERLAY':
-        if (settings.overlayEnabled !== false) {
-          createOverlay();
-          updateOverlay(msg.data || {});
+      case 'CONFIGURE_FLOW':
+        configureFlow(msg.config || {}).then((results) => {
+          sendResponse({ ok: true, results: results });
+        });
+        return true; // Keep channel open for async
+
+      case 'TOGGLE_PANEL':
+        // Handled by panel.js
+        if (typeof togglePanel === 'function') {
+          togglePanel();
         }
         sendResponse({ ok: true });
         break;
 
-      case 'REMOVE_OVERLAY':
-        removeOverlay();
-        sendResponse({ ok: true });
-        break;
-
       case 'PING':
-        sendResponse({ ok: true, ready: true });
+        sendResponse({ ok: true, ready: true, hasAuth: !!capturedAuthContext });
         break;
 
       default:
         sendResponse({ ok: false, error: 'Unknown action' });
     }
 
-    return true; // Keep message channel open for async
+    return true;
   });
 
   /* ============================================================
@@ -510,42 +409,19 @@
         (data.status === 'running' || data.status === 'paused' || data.status === 'waiting_cooldown')) {
       addLog('Content script reloaded — sending CONTENT_READY.', 'info');
       chrome.runtime.sendMessage({ action: 'CONTENT_READY' });
-
-      if (settings.overlayEnabled !== false) {
-        createOverlay();
-        updateOverlay({ status: data.status });
-      }
     }
   });
 
   /* ============================================================
-     STORAGE CHANGE LISTENER (for overlay updates)
+     STORAGE CHANGE LISTENER
      ============================================================ */
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-
-    const newStatus = changes.status?.newValue;
-    const newIndex = changes.currentIndex?.newValue;
-    const newCountdown = changes.countdownEnd?.newValue;
-    const prompts = changes.prompts?.newValue;
-
-    if (overlayEl) {
-      chrome.storage.local.get(['status', 'currentIndex', 'prompts', 'settings', 'countdownEnd'], (data) => {
-        const totalPrompts = (data.prompts || []).length;
-        const s = data.settings || {};
-        const batchSize = s.batchSize || 4;
-        const batchProgress = data.currentIndex % batchSize;
-
-        updateOverlay({
-          status: data.status,
-          currentIndex: data.currentIndex || 0,
-          totalPrompts: totalPrompts,
-          batchProgress: batchProgress,
-          batchSize: batchSize,
-          countdownEnd: data.countdownEnd
-        });
-      });
+    // Panel handles its own UI updates via storage.onChanged
+    // Content.js just needs to track settings changes
+    if (changes.settings?.newValue) {
+      settings = changes.settings.newValue;
     }
   });
 

@@ -1,17 +1,18 @@
 {
   "manifest_version": 3,
-  "name": "Google Flow Prompt Automation",
-  "version": "1.0.0",
-  "description": "Automates prompt submission on the Google Flow image-generation page with batch processing, cooldowns, and full control.",
+  "name": "Flow Automation",
+  "version": "2.0.0",
+  "description": "Advanced automation for Google Flow — bulk prompt submission, gallery management, queue system with auto-retry, and API-level submission.",
   "permissions": [
     "storage",
     "activeTab",
     "scripting",
     "tabs",
-    "alarms"
+    "alarms",
+    "downloads",
+    "unlimitedStorage"
   ],
   "host_permissions": [
-    "*://aitestkitchen.withgoogle.com/*",
     "*://labs.google/*"
   ],
   "background": {
@@ -32,13 +33,22 @@
   },
   "content_scripts": [
     {
-      "matches": [
-        "*://aitestkitchen.withgoogle.com/*",
-        "*://labs.google/*"
-      ],
-      "js": ["utils.js", "content.js"],
+      "matches": ["*://labs.google/*"],
+      "js": ["api-interceptor.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["*://labs.google/*"],
+      "js": ["utils.js", "flow-configurator.js", "content.js", "panel.js"],
+      "css": ["panel.css"],
       "run_at": "document_idle"
     }
   ],
-  "options_page": "options.html"
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*"],
+      "matches": ["*://labs.google/*"]
+    }
+  ]
 }

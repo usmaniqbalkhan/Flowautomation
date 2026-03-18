@@ -1,25 +1,51 @@
 /**
- * background.js — Service worker coordinator for Google Flow Prompt Automation.
- * Manages state machine, job lifecycle, single-tab enforcement, and messaging.
+ * background.js — Service worker coordinator for Flow Automation v2.
+ * Extended state machine with queue management, image capture, and auto-retry.
  */
 
 /* ============================================================
    DEFAULT SETTINGS
    ============================================================ */
 const DEFAULT_SETTINGS = {
+  mode: 'text-to-image',
+  imagesPerTask: 4,
+  imageModel: 'nano_banana_pro',
+  imageRatio: '16:9',
+  submitPath: 'dom_first',
   batchSize: 4,
   batchCooldownMs: 60000,
   intraPromptGapMs: 3000,
+  imageSubmitWaitMs: 2500,
   typingDelayMs: 20,
   maxRetries: 2,
   submitMethod: 'auto',
-  parserMode: 'paragraph',
-  overlayEnabled: true,
+  parserMode: 'line',
   detectionStrategy: 'hybrid',
   autoReattachAfterReload: true,
+  autoStartNext: true,
+  autoRetryFailed: false,
+  autoRetryMaxRounds: 12,
+  autoZoom: false,
+  zoomLevel: 0.8,
+  autoNewProject: false,
   customInputSelectors: [],
   customSubmitSelectors: [],
-  urlPatterns: ['*://aitestkitchen.withgoogle.com/*', '*://labs.google/*']
+  downloadSettings: {
+    autoDownloadImages: false,
+    imageResolution: '1K',
+    autoDownloadVideos: false,
+    videoResolution: '720p',
+    folder: 'flowautomation',
+    autoNumber: true
+  },
+  filenameTemplate: {
+    prefix: '',
+    index: 'nn',
+    promptPart: 'first_3_words',
+    date: 'none',
+    suffix: 'none',
+    separator: '_'
+  }
 };
 
 const ALARM_BATCH_COOLDOWN = 'batch-cooldown';
@@ -28,9 +54,6 @@ const ALARM_BATCH_COOLDOWN = 'batch-cooldown';
    STATE HELPERS
    ============================================================ */
 
-/**
- * Load full state from storage with defaults.
- */
 function loadState() {
   return new Promise((resolve) => {
     chrome.storage.local.get(null, (data) => {
@@ -43,24 +66,25 @@ function loadState() {
         settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) },
         logs: data.logs || [],
         countdownEnd: data.countdownEnd || null,
-        lastError: data.lastError || null
+        lastError: data.lastError || null,
+        capturedImages: data.capturedImages || [],
+        authContext: data.authContext || null,
+        failedPrompts: data.failedPrompts || [],
+        retryRound: data.retryRound || 0,
+        jobId: data.jobId || null,
+        totalJobs: data.totalJobs || 1,
+        currentJob: data.currentJob || 1
       });
     });
   });
 }
 
-/**
- * Save partial state updates to storage.
- */
 function saveState(updates) {
   return new Promise((resolve) => {
     chrome.storage.local.set(updates, resolve);
   });
 }
 
-/**
- * Add a log entry to storage.
- */
 async function addLogEntry(message, level) {
   const entry = {
     timestamp: new Date().toISOString(),
@@ -70,44 +94,22 @@ async function addLogEntry(message, level) {
   console.log(`[FlowAuto BG] [${entry.level.toUpperCase()}] ${entry.message}`);
 
   const state = await loadState();
-  const logs = state.logs.slice(-199); // Keep last 200 entries
+  const logs = state.logs.slice(-499); // Keep last 500 entries
   logs.push(entry);
   await saveState({ logs: logs });
 }
 
-/**
- * Generate a unique run ID.
- */
 function generateRunId() {
   return 'run-' + Date.now() + '-' + Math.random().toString(36).substring(2, 8);
 }
 
-/**
- * Check if a URL matches allowed patterns.
- */
-function urlMatchesPatterns(url, patterns) {
+function urlMatchesPatterns(url) {
   if (!url) return false;
-  for (const pattern of patterns) {
-    // Convert match pattern to regex
-    const regexStr = pattern
-      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-      .replace(/\\\*/g, '.*');
-    try {
-      if (new RegExp('^' + regexStr + '$').test(url)) return true;
-    } catch (e) {
-      // Simpler check — see if the URL contains key parts
-    }
-  }
-  // Fallback: check known hostnames
   try {
     const parsed = new URL(url);
-    if (parsed.hostname === 'aitestkitchen.withgoogle.com' ||
-        parsed.hostname === 'labs.google' ||
-        parsed.hostname.endsWith('.labs.google')) {
-      return true;
-    }
-  } catch (e) { /* invalid URL */ }
-  return false;
+    return parsed.hostname === 'labs.google' ||
+           parsed.hostname.endsWith('.labs.google');
+  } catch (e) { return false; }
 }
 
 /* ============================================================
@@ -127,51 +129,37 @@ function sendToContent(tabId, message) {
   });
 }
 
-/**
- * Update the overlay on the content script tab.
- */
-async function updateContentOverlay(state) {
-  if (!state.activeTabId) return;
-  const totalPrompts = (state.prompts || []).length;
-  const batchSize = state.settings.batchSize || 4;
-  const batchProgress = state.currentIndex % batchSize;
-
-  await sendToContent(state.activeTabId, {
-    action: 'UPDATE_OVERLAY',
-    data: {
-      status: state.status,
-      currentIndex: state.currentIndex,
-      totalPrompts: totalPrompts,
-      batchProgress: batchProgress,
-      batchSize: batchSize,
-      countdownEnd: state.countdownEnd
-    }
-  });
-}
-
 /* ============================================================
    CORE AUTOMATION LOGIC
    ============================================================ */
 
-/**
- * Send the next prompt to the content script.
- */
 async function sendNextPrompt() {
   const state = await loadState();
 
-  if (state.status !== 'running') {
-    return;
-  }
+  if (state.status !== 'running') return;
 
   if (state.currentIndex >= state.prompts.length) {
+    // Check for failed prompts to retry
+    if (state.settings.autoRetryFailed && state.failedPrompts.length > 0 &&
+        state.retryRound < state.settings.autoRetryMaxRounds) {
+      await addLogEntry(`Retrying ${state.failedPrompts.length} failed prompts (round ${state.retryRound + 1})...`, 'info');
+      await saveState({
+        prompts: state.failedPrompts,
+        failedPrompts: [],
+        currentIndex: 0,
+        retryRound: state.retryRound + 1
+      });
+      await sendNextPrompt();
+      return;
+    }
+
     await addLogEntry('All prompts processed!', 'success');
     await saveState({ status: 'completed', countdownEnd: null });
-    await updateContentOverlay({ ...state, status: 'completed', countdownEnd: null });
     return;
   }
 
   const prompt = state.prompts[state.currentIndex];
-  await addLogEntry('Sending next prompt...', 'info');
+  await addLogEntry(`[Job ${state.currentJob}/${state.totalJobs}] Sending prompt ${state.currentIndex + 1}/${state.prompts.length}...`, 'info');
 
   const response = await sendToContent(state.activeTabId, {
     action: 'PROCESS_PROMPT',
@@ -182,42 +170,44 @@ async function sendNextPrompt() {
   });
 
   if (!response || !response.ok) {
-    await addLogEntry('Failed to send prompt to content script. Tab may have been closed or navigated away.', 'error');
+    await addLogEntry('Failed to send prompt to content script.', 'error');
     await saveState({ status: 'error', lastError: 'Content script unreachable' });
   }
-
-  await updateContentOverlay(state);
 }
 
-/**
- * Handle successful prompt completion.
- */
 async function handlePromptDone(msg) {
   const state = await loadState();
-
-  // Validate run ID to prevent stale messages
-  if (msg.runId !== state.runId) {
-    console.warn('[FlowAuto BG] Stale runId, ignoring PROMPT_DONE');
-    return;
-  }
+  if (msg.runId !== state.runId) return;
 
   const newIndex = state.currentIndex + 1;
   const batchSize = state.settings.batchSize || 4;
   const batchCooldownMs = state.settings.batchCooldownMs || 60000;
 
-  await addLogEntry('Prompt completed.', 'success');
+  await addLogEntry(`Prompt ${newIndex} completed.`, 'success');
 
-  // Check if all done
   if (newIndex >= state.prompts.length) {
+    // Check auto-retry
+    if (state.settings.autoRetryFailed && state.failedPrompts.length > 0 &&
+        state.retryRound < state.settings.autoRetryMaxRounds) {
+      await addLogEntry(`Starting retry round ${state.retryRound + 1} for ${state.failedPrompts.length} failed prompts.`, 'info');
+      await saveState({
+        prompts: state.failedPrompts,
+        failedPrompts: [],
+        currentIndex: 0,
+        retryRound: state.retryRound + 1,
+        status: 'running'
+      });
+      setTimeout(sendNextPrompt, 1000);
+      return;
+    }
+
     await saveState({ currentIndex: newIndex, status: 'completed', countdownEnd: null });
     await addLogEntry('All prompts completed!', 'success');
-    await updateContentOverlay({ ...state, currentIndex: newIndex, status: 'completed', countdownEnd: null });
     return;
   }
 
-  // Check if batch boundary
+  // Batch boundary check
   if (newIndex % batchSize === 0) {
-    // Start batch cooldown
     const countdownEnd = Date.now() + batchCooldownMs;
     await saveState({
       currentIndex: newIndex,
@@ -225,46 +215,63 @@ async function handlePromptDone(msg) {
       countdownEnd: countdownEnd
     });
     await addLogEntry(`Batch completed. Cooling down for ${batchCooldownMs / 1000}s...`, 'info');
-
-    // Set alarm for cooldown
-    chrome.alarms.create(ALARM_BATCH_COOLDOWN, {
-      when: countdownEnd
-    });
-
-    await updateContentOverlay({
-      ...state, currentIndex: newIndex,
-      status: 'waiting_cooldown', countdownEnd: countdownEnd
-    });
+    chrome.alarms.create(ALARM_BATCH_COOLDOWN, { when: countdownEnd });
   } else {
-    // Continue with next prompt after intra-prompt gap
     await saveState({ currentIndex: newIndex, status: 'running' });
-
-    // Small delay before sending next prompt (intra-prompt gap is handled by content script's waitForReadyState)
-    setTimeout(sendNextPrompt, 500);
+    const waitMs = state.settings.imageSubmitWaitMs || 2500;
+    setTimeout(sendNextPrompt, waitMs);
   }
 }
 
-/**
- * Handle prompt error.
- */
 async function handlePromptError(msg) {
   const state = await loadState();
   if (msg.runId !== state.runId) return;
 
+  const failedPrompt = state.prompts[state.currentIndex];
+  const failedPrompts = [...state.failedPrompts, failedPrompt];
+
   await addLogEntry(`Prompt error: ${msg.error}`, 'error');
-  await saveState({ status: 'error', lastError: msg.error });
-  await updateContentOverlay({ ...state, status: 'error' });
+
+  // Continue to next prompt instead of stopping
+  const newIndex = state.currentIndex + 1;
+  if (newIndex >= state.prompts.length) {
+    if (state.settings.autoRetryFailed && failedPrompts.length > 0 &&
+        state.retryRound < state.settings.autoRetryMaxRounds) {
+      await saveState({
+        prompts: failedPrompts,
+        failedPrompts: [],
+        currentIndex: 0,
+        retryRound: state.retryRound + 1,
+        status: 'running'
+      });
+      await addLogEntry(`Starting retry round for ${failedPrompts.length} failed prompts.`, 'info');
+      setTimeout(sendNextPrompt, 1000);
+    } else {
+      await saveState({
+        currentIndex: newIndex,
+        status: 'completed',
+        failedPrompts: failedPrompts
+      });
+    }
+  } else {
+    await saveState({
+      currentIndex: newIndex,
+      status: 'running',
+      failedPrompts: failedPrompts
+    });
+    setTimeout(sendNextPrompt, 1000);
+  }
 }
 
 /* ============================================================
-   ALARM HANDLER (batch cooldown)
+   ALARM HANDLER
    ============================================================ */
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === ALARM_BATCH_COOLDOWN) {
     const state = await loadState();
     if (state.status === 'waiting_cooldown') {
-      await addLogEntry('Batch cooldown finished. Resuming automation.', 'info');
+      await addLogEntry('Batch cooldown finished. Resuming.', 'info');
       await saveState({ status: 'running', countdownEnd: null });
       await sendNextPrompt();
     }
@@ -276,7 +283,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
    ============================================================ */
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // Handle async operations by wrapping in an IIFE
   (async () => {
     try {
       switch (msg.action) {
@@ -284,41 +290,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'START': {
           const state = await loadState();
 
-          // Validate prompts loaded
           if (!state.prompts || state.prompts.length === 0) {
-            sendResponse({ ok: false, error: 'No prompts loaded. Upload a .txt file first.' });
+            sendResponse({ ok: false, error: 'No prompts loaded.' });
             return;
           }
 
-          // Get active tab
           const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
           if (!activeTab) {
             sendResponse({ ok: false, error: 'No active tab found.' });
             return;
           }
 
-          // Validate URL
-          if (!urlMatchesPatterns(activeTab.url, state.settings.urlPatterns)) {
-            sendResponse({ ok: false, error: 'Current tab URL does not match Google Flow page. Navigate to the Flow page first.' });
+          if (!urlMatchesPatterns(activeTab.url)) {
+            sendResponse({ ok: false, error: 'Navigate to Google Flow first.' });
             return;
           }
 
-          // Single-tab enforcement
-          if (state.status === 'running' && state.activeTabId && state.activeTabId !== activeTab.id) {
-            sendResponse({ ok: false, error: 'Automation is already running in another tab.' });
-            return;
-          }
-
-          // Ensure content script is responsive
+          // Ensure content script is ready
           const pingResp = await sendToContent(activeTab.id, { action: 'PING' });
           if (!pingResp || !pingResp.ready) {
-            // Try injecting content scripts
             try {
               await chrome.scripting.executeScript({
                 target: { tabId: activeTab.id },
-                files: ['utils.js', 'content.js']
+                files: ['utils.js', 'flow-configurator.js', 'content.js', 'panel.js']
               });
-              // Wait briefly for scripts to initialize
               await new Promise(r => setTimeout(r, 500));
             } catch (e) {
               sendResponse({ ok: false, error: 'Cannot inject content script: ' + e.message });
@@ -326,20 +321,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             }
           }
 
-          // Start automation
+          // Configure Flow if needed
+          if (state.settings.autoZoom || state.settings.autoNewProject) {
+            await sendToContent(activeTab.id, {
+              action: 'CONFIGURE_FLOW',
+              config: {
+                autoZoom: state.settings.autoZoom,
+                zoomLevel: state.settings.zoomLevel,
+                newProject: state.settings.autoNewProject,
+                imageCount: state.settings.imagesPerTask,
+                model: state.settings.imageModel,
+                ratio: state.settings.imageRatio
+              }
+            });
+            await new Promise(r => setTimeout(r, 1000));
+          }
+
           const runId = generateRunId();
+          const startIndex = state.settings.startFrom ? Math.max(0, state.settings.startFrom - 1) : (state.currentIndex || 0);
+
           await saveState({
             status: 'running',
             runId: runId,
             activeTabId: activeTab.id,
+            currentIndex: startIndex,
             countdownEnd: null,
-            lastError: null
+            lastError: null,
+            failedPrompts: [],
+            retryRound: 0,
+            currentJob: 1,
+            totalJobs: 1
           });
           await addLogEntry('Automation started.', 'success');
 
           sendResponse({ ok: true, runId: runId });
-
-          // Send first prompt
           await sendNextPrompt();
           break;
         }
@@ -347,13 +362,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'PAUSE': {
           const state = await loadState();
           if (state.status === 'running' || state.status === 'waiting_cooldown') {
-            await saveState({ status: 'paused' });
+            await saveState({ status: 'paused', countdownEnd: null });
             chrome.alarms.clear(ALARM_BATCH_COOLDOWN);
             if (state.activeTabId) {
               await sendToContent(state.activeTabId, { action: 'PAUSE' });
             }
             await addLogEntry('Automation paused.', 'info');
-            await updateContentOverlay({ ...state, status: 'paused', countdownEnd: null });
           }
           sendResponse({ ok: true });
           break;
@@ -393,7 +407,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'SKIP': {
           const state = await loadState();
           if (state.status === 'running' || state.status === 'paused') {
-            // Signal content script to skip
             if (state.activeTabId) {
               await sendToContent(state.activeTabId, { action: 'SKIP' });
             }
@@ -402,7 +415,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
             if (newIndex >= state.prompts.length) {
               await saveState({ currentIndex: newIndex, status: 'completed' });
-              await addLogEntry('All prompts completed (last was skipped).', 'success');
             } else {
               await saveState({ currentIndex: newIndex, status: 'running' });
               setTimeout(sendNextPrompt, 1000);
@@ -417,7 +429,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           chrome.alarms.clear(ALARM_BATCH_COOLDOWN);
           if (state.activeTabId) {
             await sendToContent(state.activeTabId, { action: 'STOP' });
-            await sendToContent(state.activeTabId, { action: 'REMOVE_OVERLAY' });
           }
           await saveState({
             currentIndex: 0,
@@ -426,9 +437,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             activeTabId: null,
             countdownEnd: null,
             lastError: null,
+            failedPrompts: [],
+            retryRound: 0,
             logs: []
           });
-          await addLogEntry('Progress reset to 0.', 'info');
+          await addLogEntry('Progress reset.', 'info');
           sendResponse({ ok: true });
           break;
         }
@@ -446,7 +459,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             currentIndex: 0,
             status: 'idle',
             runId: null,
-            activeTabId: null
+            activeTabId: null,
+            failedPrompts: [],
+            retryRound: 0
           });
           await addLogEntry(`Loaded ${prompts.length} prompts.`, 'success');
           sendResponse({ ok: true, count: prompts.length });
@@ -475,15 +490,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         case 'CONTENT_READY': {
-          // Content script reloaded — check if we should auto-resume
           const state = await loadState();
           if (state.settings.autoReattachAfterReload &&
               (state.status === 'running' || state.status === 'waiting_cooldown')) {
             const tabId = sender.tab?.id;
             if (tabId) {
               await saveState({ activeTabId: tabId });
-              await addLogEntry('Content script reconnected after reload.', 'info');
-
+              await addLogEntry('Content script reconnected.', 'info');
               if (state.status === 'running') {
                 await sendNextPrompt();
               }
@@ -493,10 +506,55 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
+        case 'API_AUTH_CAPTURED': {
+          await saveState({ authContext: msg.authContext });
+          await addLogEntry('API auth context stored.', 'info');
+          sendResponse({ ok: true });
+          break;
+        }
+
+        case 'IMAGES_CAPTURED': {
+          const state = await loadState();
+          const newImages = (msg.images || []).map(url => ({
+            url: url,
+            promptText: msg.promptText || '',
+            projectId: msg.projectId || '',
+            timestamp: Date.now(),
+            resolution: '1K'
+          }));
+          const capturedImages = [...state.capturedImages, ...newImages];
+          await saveState({ capturedImages: capturedImages });
+          sendResponse({ ok: true });
+          break;
+        }
+
+        case 'RETRY_FAILED': {
+          const state = await loadState();
+          if (state.failedPrompts.length > 0) {
+            await saveState({
+              prompts: state.failedPrompts,
+              failedPrompts: [],
+              currentIndex: 0,
+              status: 'idle',
+              retryRound: state.retryRound + 1
+            });
+            await addLogEntry(`Queued ${state.failedPrompts.length} failed prompts for retry.`, 'info');
+          }
+          sendResponse({ ok: true });
+          break;
+        }
+
+        case 'CLEAR_GALLERY': {
+          await saveState({ capturedImages: [] });
+          await addLogEntry('Gallery cleared.', 'info');
+          sendResponse({ ok: true });
+          break;
+        }
+
         case 'ADD_LOG': {
           if (msg.log) {
             const state = await loadState();
-            const logs = state.logs.slice(-199);
+            const logs = state.logs.slice(-499);
             logs.push(msg.log);
             await saveState({ logs: logs });
           }
@@ -508,49 +566,59 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: false, error: 'Unknown action: ' + msg.action });
       }
     } catch (err) {
-      console.error('[FlowAuto BG] Error handling message:', err);
+      console.error('[FlowAuto BG] Error:', err);
       sendResponse({ ok: false, error: err.message });
     }
   })();
 
-  return true; // Keep message channel open for async
+  return true;
 });
 
 /* ============================================================
    TAB EVENT LISTENERS
    ============================================================ */
 
-// Tab closed — if it was the active automation tab, pause
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const state = await loadState();
   if (state.activeTabId === tabId && state.status !== 'idle' && state.status !== 'completed') {
     chrome.alarms.clear(ALARM_BATCH_COOLDOWN);
     await saveState({ status: 'paused', activeTabId: null, countdownEnd: null });
-    await addLogEntry('Active tab was closed. Automation paused.', 'warn');
+    await addLogEntry('Active tab closed. Automation paused.', 'warn');
   }
 });
 
-// Tab URL changed — if active tab navigated away from target, warn
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
   if (!changeInfo.url) return;
   const state = await loadState();
   if (state.activeTabId === tabId && state.status === 'running') {
-    if (!urlMatchesPatterns(changeInfo.url, state.settings.urlPatterns)) {
+    if (!urlMatchesPatterns(changeInfo.url)) {
       await saveState({ status: 'paused' });
-      await addLogEntry('Active tab navigated away from target page. Automation paused.', 'warn');
+      await addLogEntry('Tab navigated away. Automation paused.', 'warn');
     }
   }
 });
 
 /* ============================================================
-   SERVICE WORKER INSTALL/ACTIVATE
+   TOOLBAR ICON CLICK — Toggle Panel
+   ============================================================ */
+
+chrome.action.onClicked.addListener(async (tab) => {
+  if (urlMatchesPatterns(tab.url)) {
+    await sendToContent(tab.id, { action: 'TOGGLE_PANEL' });
+  } else {
+    // Open Flow page
+    chrome.tabs.create({ url: 'https://labs.google/fx/tools/flow' });
+  }
+});
+
+/* ============================================================
+   INSTALL/UPDATE
    ============================================================ */
 
 chrome.runtime.onInstalled.addListener(async () => {
-  // Initialize default settings if not present
   const state = await loadState();
   if (!state.settings || Object.keys(state.settings).length === 0) {
     await saveState({ settings: DEFAULT_SETTINGS });
   }
-  console.log('[FlowAuto BG] Extension installed/updated.');
+  console.log('[FlowAuto BG] Extension installed/updated v2.0.');
 });
