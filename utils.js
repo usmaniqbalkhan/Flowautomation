@@ -402,8 +402,8 @@ function focusPromptInput(el) {
 
 /**
  * Clear the prompt input element completely.
- * Uses multiple strategies to ensure contenteditable is truly empty,
- * preventing prompt accumulation across submissions.
+ * Uses React-safe strategies only — NEVER sets innerHTML directly
+ * as that corrupts React's virtual DOM and crashes the page.
  */
 function clearPromptInput(el) {
   if (!el) return;
@@ -413,7 +413,7 @@ function clearPromptInput(el) {
                              el.getAttribute('contenteditable') === '';
 
   if (isContentEditable) {
-    // Strategy 1: Select all via execCommand and delete
+    // Strategy 1: Ctrl+A via execCommand then delete
     document.execCommand('selectAll', false, null);
 
     el.dispatchEvent(new InputEvent('beforeinput', {
@@ -428,9 +428,8 @@ function clearPromptInput(el) {
       bubbles: true, cancelable: false, composed: true
     }));
 
-    // Strategy 2: If text still remains, force-clear via Selection API
-    const remainingText = (el.textContent || '').trim();
-    if (remainingText.length > 0) {
+    // Strategy 2: If text still remains, use Selection API to select all and delete
+    if ((el.textContent || '').trim().length > 0) {
       const selection = window.getSelection();
       const range = document.createRange();
       range.selectNodeContents(el);
@@ -450,16 +449,29 @@ function clearPromptInput(el) {
       }));
     }
 
-    // Strategy 3: If STILL not empty, nuke the innerHTML directly
-    // and fire synthetic events to force React to sync
+    // Strategy 3: If STILL not empty, use deleteContentForward to remove remaining
     if ((el.textContent || '').trim().length > 0) {
-      el.innerHTML = '';
+      // Place cursor at start, then select to end and delete
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Try Ctrl+A keyboard simulation then delete
+      el.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'a', code: 'KeyA', ctrlKey: true, bubbles: true
+      }));
+
       el.dispatchEvent(new InputEvent('beforeinput', {
-        inputType: 'deleteContentBackward',
+        inputType: 'deleteByCut',
         bubbles: true, cancelable: true, composed: true
       }));
+
+      document.execCommand('delete', false, null);
+
       el.dispatchEvent(new InputEvent('input', {
-        inputType: 'deleteContentBackward',
+        inputType: 'deleteByCut',
         bubbles: true, cancelable: false, composed: true
       }));
     }
@@ -491,16 +503,14 @@ function simulateTyping(el, text, delayMs) {
     clearPromptInput(el);
     await new Promise(r => setTimeout(r, 100));
 
-    // Verify the input is actually empty
+    // Verify the input is actually empty — retry clear if not
     if (isContentEditable) {
       const remaining = (el.textContent || '').trim();
       if (remaining.length > 0) {
-        addLog(`Input still has text after clear: "${remaining.substring(0, 30)}..." — force clearing.`, 'warn');
-        // Force clear again
-        el.innerHTML = '';
+        addLog(`Input still has text after clear: "${remaining.substring(0, 30)}..." — retrying clear.`, 'warn');
         focusPromptInput(el);
         clearPromptInput(el);
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 150));
       }
     }
 

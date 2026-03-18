@@ -213,11 +213,15 @@
     if (isContentEditable) {
       const leftover = (inputEl.textContent || '').trim();
       if (leftover.length > 0) {
-        addLog(`Input not empty after clear ("${leftover.substring(0, 30)}..."), force clearing.`, 'warn');
-        inputEl.innerHTML = '';
-        await sleep(100);
+        addLog(`Input not empty after clear ("${leftover.substring(0, 30)}..."), retrying clear.`, 'warn');
+        focusPromptInput(inputEl);
         clearPromptInput(inputEl);
         await sleep(200);
+        // One more try
+        if ((inputEl.textContent || '').trim().length > 0) {
+          clearPromptInput(inputEl);
+          await sleep(200);
+        }
       }
     }
     focusPromptInput(inputEl);

@@ -281,126 +281,88 @@
 
   const originalFetch = window.fetch;
 
-  window.fetch = async function patchedFetch(input, init) {
-    let url = '';
-    let method = 'GET';
-    let headers = null;
-    let body = null;
-
-    // Normalise input — could be a string, URL, or Request object
+  window.fetch = function patchedFetch(input, init) {
+    // Extract URL synchronously — NEVER await anything before calling originalFetch
+    var url = '';
+    var method = 'GET';
     try {
       if (input instanceof Request) {
         url = input.url;
         method = input.method || 'GET';
-        headers = input.headers;
-        // Clone the request so we can read the body without consuming it
-        try {
-          body = await input.clone().text();
-        } catch (e) { /* body may not be readable */ }
       } else {
         url = (typeof input === 'string') ? input : String(input);
         method = (init && init.method) ? init.method.toUpperCase() : 'GET';
-        headers = (init && init.headers) ? init.headers : null;
-        body = (init && init.body) ? init.body : null;
-        // If body is not a string, try to read it
-        if (body && typeof body !== 'string') {
-          try {
-            if (typeof body.text === 'function') {
-              body = await body.text();
-            } else {
-              body = String(body);
-            }
-          } catch (e) {
-            body = null;
-          }
-        }
       }
     } catch (e) {
-      // If anything fails during introspection, just call original fetch
-      warn('Error inspecting fetch request:', e);
       return originalFetch.apply(this, arguments);
     }
 
-    // Only intercept tRPC calls
-    const isTrpc = url.includes(TRPC_PATH);
+    var isTrpc = url.includes(TRPC_PATH);
 
+    // Capture auth headers synchronously (non-blocking)
     if (isTrpc) {
-      log('Intercepted tRPC %s %s', method, url);
+      try {
+        var headers = (input instanceof Request) ? input.headers : (init && init.headers);
+        if (headers) updateAuthContext(headers, url);
+        if (init && init.headers && init.headers !== headers) {
+          updateAuthContext(init.headers, url);
+        }
 
-      // Capture auth from outgoing request
-      if (headers) {
-        updateAuthContext(headers, url);
+        // Register procedure pattern (body not needed for registration)
+        registerTrpcCall(url, method, null);
+
+        postToExtension('TRPC_REQUEST', {
+          url: url,
+          method: method,
+          procedures: parseTrpcProcedure(url),
+          timestamp: Date.now()
+        });
+      } catch (e) {
+        warn('Error in pre-fetch interception:', e);
       }
-      // Also capture from init.headers if we haven't already
-      if (init && init.headers && init.headers !== headers) {
-        updateAuthContext(init.headers, url);
-      }
-
-      // Register the tRPC procedure pattern
-      registerTrpcCall(url, method, body);
-
-      // Notify extension about the outgoing call
-      postToExtension('TRPC_REQUEST', {
-        url: url,
-        method: method,
-        procedures: parseTrpcProcedure(url),
-        hasBody: !!body,
-        timestamp: Date.now()
-      });
     }
 
-    // ALWAYS call the original fetch — never break page functionality
-    let response;
-    try {
-      response = await originalFetch.apply(this, arguments);
-    } catch (fetchError) {
-      // Network error — still throw so the page handles it normally
-      if (isTrpc) {
+    // Call original fetch IMMEDIATELY — no awaits before this
+    var fetchPromise = originalFetch.apply(this, arguments);
+
+    // Only intercept response for tRPC calls, and do it non-blocking
+    if (isTrpc) {
+      fetchPromise.then(function (response) {
+        if (response.ok) {
+          try {
+            var clonedResponse = response.clone();
+            clonedResponse.json().then(function (jsonData) {
+              var procedures = parseTrpcProcedure(url);
+              var procedureName = procedures.join(',') || 'unknown';
+              var imageUrls = extractImageUrls(jsonData);
+              storeDiscoveredImages(imageUrls, procedureName);
+
+              postToExtension('TRPC_RESPONSE', {
+                url: url,
+                procedures: procedures,
+                status: response.status,
+                hasImages: imageUrls.length > 0,
+                imageCount: imageUrls.length,
+                timestamp: Date.now()
+              });
+            }).catch(function () {
+              // Not valid JSON — ignore
+            });
+          } catch (e) {
+            // Ignore cloning errors
+          }
+        }
+      }).catch(function (fetchError) {
         postToExtension('TRPC_ERROR', {
           url: url,
           error: fetchError.message,
           timestamp: Date.now()
         });
-      }
-      throw fetchError;
+      });
     }
 
-    // Intercept the response body for tRPC calls
-    if (isTrpc && response.ok) {
-      try {
-        // Clone the response so we can read the body without consuming it
-        const clonedResponse = response.clone();
-        // Read the response body asynchronously — don't block the caller
-        clonedResponse.json().then(function (jsonData) {
-          const procedures = parseTrpcProcedure(url);
-          const procedureName = procedures.join(',') || 'unknown';
-
-          // Extract image URLs
-          const imageUrls = extractImageUrls(jsonData);
-          storeDiscoveredImages(imageUrls, procedureName);
-
-          // Notify extension about the response
-          postToExtension('TRPC_RESPONSE', {
-            url: url,
-            procedures: procedures,
-            status: response.status,
-            hasImages: imageUrls.length > 0,
-            imageCount: imageUrls.length,
-            responseShape: summarizeBody(jsonData),
-            timestamp: Date.now()
-          });
-        }).catch(function (parseErr) {
-          // Response was not valid JSON — that's fine, some tRPC responses
-          // might be streaming or non-JSON.
-          log('Could not parse tRPC response as JSON for %s: %s', url, parseErr.message);
-        });
-      } catch (e) {
-        warn('Error cloning/reading tRPC response:', e);
-      }
-    }
-
-    // Return the original, untouched response
-    return response;
+    // Return the ORIGINAL promise — caller gets the untouched response
+    return fetchPromise;
   };
 
   /* ============================================================
