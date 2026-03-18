@@ -246,22 +246,24 @@ function setNativeValue(el, value) {
 
   if (isContentEditable) {
     el.focus();
-    // Clear existing content
+    // Clear with beforeinput/input events for React
     document.execCommand('selectAll', false, null);
+    el.dispatchEvent(new InputEvent('beforeinput', {
+      inputType: 'deleteContentBackward', bubbles: true, cancelable: true, composed: true
+    }));
     document.execCommand('delete', false, null);
+    el.dispatchEvent(new InputEvent('input', {
+      inputType: 'deleteContentBackward', bubbles: true, cancelable: false, composed: true
+    }));
     if (value) {
-      // Try paste simulation first (works with React/Next.js)
-      try {
-        const dt = new DataTransfer();
-        dt.setData('text/plain', value);
-        el.dispatchEvent(new ClipboardEvent('paste', {
-          bubbles: true, cancelable: true, clipboardData: dt
-        }));
-      } catch (e) {
-        document.execCommand('insertText', false, value);
-      }
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertText', data: value, bubbles: true, cancelable: true, composed: true
+      }));
+      document.execCommand('insertText', false, value);
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertText', data: value, bubbles: true, cancelable: false, composed: true
+      }));
     }
-    dispatchInputEvents(el);
   } else if (tagName === 'textarea' || tagName === 'input') {
     // Use native setter to bypass React's synthetic event system
     const nativeSetter =
@@ -306,9 +308,24 @@ function clearPromptInput(el) {
                              el.getAttribute('contenteditable') === '';
 
   if (isContentEditable) {
-    // Use execCommand to clear — this properly notifies the framework
-    document.execCommand('selectAll', false, null);
+    // Select all and delete with proper beforeinput/input events for React
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    el.dispatchEvent(new InputEvent('beforeinput', {
+      inputType: 'deleteContentBackward',
+      bubbles: true, cancelable: true, composed: true
+    }));
+
     document.execCommand('delete', false, null);
+
+    el.dispatchEvent(new InputEvent('input', {
+      inputType: 'deleteContentBackward',
+      bubbles: true, cancelable: false, composed: true
+    }));
   } else {
     setNativeValue(el, '');
   }
@@ -336,64 +353,55 @@ function simulateTyping(el, text, delayMs) {
 
     if (isContentEditable) {
       // For contenteditable (React/Next.js apps like Google Flow):
-      // execCommand alone doesn't update React's internal state.
-      // Use multiple strategies to ensure the framework picks up the text.
+      // We must type character-by-character with proper beforeinput/input
+      // events so React's Input Events Level 2 handling picks up each change.
+      // This is the ONLY reliable way to update React state on contenteditable.
 
-      // Strategy 1: Simulate clipboard paste — React handles paste events natively
-      let pasteWorked = false;
-      try {
-        const dt = new DataTransfer();
-        dt.setData('text/plain', text);
-        const pasteEvent = new ClipboardEvent('paste', {
+      // Find the actual text target — often a <p> inside the contenteditable
+      let textTarget = el.querySelector('p') || el;
+
+      // Place cursor at end of the text target
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(textTarget);
+      range.collapse(false); // collapse to end
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Type character by character with beforeinput + input events
+      // Use small chunks (5 chars) for speed while maintaining React compatibility
+      const chunkSize = 5;
+      for (let i = 0; i < text.length; i += chunkSize) {
+        const chunk = text.substring(i, Math.min(i + chunkSize, text.length));
+
+        // beforeinput — React uses this to know text is about to change
+        el.dispatchEvent(new InputEvent('beforeinput', {
+          inputType: 'insertText',
+          data: chunk,
           bubbles: true,
           cancelable: true,
-          clipboardData: dt
-        });
-        const notPrevented = el.dispatchEvent(pasteEvent);
-        // Check if text appeared after paste
-        await new Promise(r => setTimeout(r, 150));
-        const currentText = (el.textContent || el.innerText || '').trim();
-        if (currentText.includes(text.substring(0, 20))) {
-          pasteWorked = true;
-          addLog(`Used paste simulation to insert text (${text.length} chars)`, 'info');
+          composed: true
+        }));
+
+        // Actually insert the text using execCommand (updates the DOM)
+        document.execCommand('insertText', false, chunk);
+
+        // input — React uses this to read the new value from the DOM
+        el.dispatchEvent(new InputEvent('input', {
+          inputType: 'insertText',
+          data: chunk,
+          bubbles: true,
+          cancelable: false,
+          composed: true
+        }));
+
+        // Small delay every few chunks to let React process
+        if (i % 20 === 0 && i > 0) {
+          await new Promise(r => setTimeout(r, 10));
         }
-      } catch (e) {
-        addLog(`Paste simulation failed: ${e.message}`, 'warn');
       }
 
-      // Strategy 2: If paste didn't work, use execCommand + React fiber trigger
-      if (!pasteWorked) {
-        document.execCommand('insertText', false, text);
-
-        // Try to find and call React's onChange handler via fiber
-        try {
-          const reactKey = Object.keys(el).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
-          if (reactKey) {
-            let fiber = el[reactKey];
-            // Walk up fiber tree to find component with onChange/onInput
-            for (let i = 0; i < 10 && fiber; i++) {
-              const props = fiber.memoizedProps || fiber.pendingProps;
-              if (props && (props.onChange || props.onInput)) {
-                const handler = props.onChange || props.onInput;
-                handler({ target: el, currentTarget: el });
-                addLog('Triggered React onChange via fiber.', 'info');
-                break;
-              }
-              fiber = fiber.return;
-            }
-          }
-        } catch (e) { /* fiber approach failed, continue */ }
-
-        addLog(`Used execCommand to insert text (${text.length} chars)`, 'info');
-      }
-
-      // Dispatch standard input events for any remaining listeners
-      el.dispatchEvent(new InputEvent('input', {
-        data: text, inputType: 'insertText',
-        bubbles: true, cancelable: true
-      }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-
+      addLog(`Typed ${text.length} chars with beforeinput events into contenteditable`, 'info');
       resolve();
       return;
     }
@@ -511,19 +519,34 @@ function submitPrompt(el, method, customSubmitSelectors) {
       const clicked = submitViaButton(customSubmitSelectors);
       resolve(clicked);
     } else {
-      // Auto: try BUTTON CLICK first (Google Flow uses a generate button)
-      const clicked = submitViaButton(customSubmitSelectors);
-      if (clicked) {
-        resolve(true);
-      } else {
-        // Fallback to Enter key simulation
-        addLog('No button found, falling back to Enter key...', 'info');
+      // Auto: try BOTH Enter and button click for maximum reliability.
+      // Enter key is tried first since it goes through the same React event
+      // pipeline as real user input, which helps when React state is involved.
+      const isContentEditable = el.getAttribute('contenteditable') === 'true' ||
+                                 el.getAttribute('contenteditable') === '';
+      if (isContentEditable) {
+        // For contenteditable: Enter first (React handles it natively)
+        addLog('Contenteditable detected — submitting via Enter key...', 'info');
         submitViaEnter(el);
-
-        // Wait 1.5s to check if Enter worked
+        // Also click button after small delay as backup
+        setTimeout(() => {
+          submitViaButton(customSubmitSelectors);
+        }, 300);
         setTimeout(() => {
           resolve(true);
-        }, 1500);
+        }, 500);
+      } else {
+        // For regular inputs: button first, then Enter fallback
+        const clicked = submitViaButton(customSubmitSelectors);
+        if (clicked) {
+          resolve(true);
+        } else {
+          addLog('No button found, falling back to Enter key...', 'info');
+          submitViaEnter(el);
+          setTimeout(() => {
+            resolve(true);
+          }, 1500);
+        }
       }
     }
   });
