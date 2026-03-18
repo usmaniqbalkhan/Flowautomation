@@ -9,26 +9,121 @@
 
 /**
  * Parse a raw text file into an array of prompt strings.
+ * Auto-detects numbered prompts and strips numbering prefixes.
+ *
+ * Supported numbering formats:
+ *   1. prompt text        1) prompt text       1 - prompt text
+ *   2. prompt text        2) prompt text       2 - prompt text
+ *   (also works with multi-line prompts after a number header)
+ *
  * @param {string} text - Raw file contents
- * @param {string} mode - 'line' or 'paragraph'
- * @returns {string[]} Array of non-empty, non-comment prompts
+ * @param {string} mode - 'line', 'paragraph', or 'auto' (default)
+ * @returns {string[]} Array of non-empty, non-comment, number-stripped prompts
  */
 function parsePrompts(text, mode) {
   if (!text || typeof text !== 'string') return [];
 
+  // First, try to detect numbered prompts regardless of mode
+  const numberedResult = parseNumberedPrompts(text);
+  if (numberedResult.length > 0) {
+    return numberedResult;
+  }
+
+  // Fallback: simple split by mode
   let raw = [];
 
-  if (mode === 'line') {
-    raw = text.split(/\n/);
-  } else {
+  if (mode === 'paragraph') {
     // paragraph mode — split on one or more blank lines
     raw = text.split(/\n\s*\n/);
+  } else {
+    // line mode (default)
+    raw = text.split(/\n/);
   }
 
   return raw
-    .map(p => p.trim())
+    .map(p => stripNumberPrefix(p.trim()))
     .filter(p => p.length > 0)
     .filter(p => !p.startsWith('#'));
+}
+
+/**
+ * Detect and parse numbered prompts from text.
+ * Handles cases where a numbered prompt spans multiple lines until the next number.
+ *
+ * @param {string} text - Raw text
+ * @returns {string[]} Array of prompts (empty if no numbered pattern detected)
+ */
+function parseNumberedPrompts(text) {
+  const lines = text.split(/\n/);
+
+  // Regex to detect a line starting with a number prefix:
+  // "1. ", "1) ", "1 - ", "1: ", "01. ", etc.
+  const numberPrefixRegex = /^\s*(\d{1,4})\s*[.):\-]\s*/;
+
+  // First pass: check if the text has numbered prompts (need at least 2)
+  let numberedLineCount = 0;
+  let lastNum = 0;
+  for (const line of lines) {
+    const match = line.match(numberPrefixRegex);
+    if (match) {
+      const num = parseInt(match[1], 10);
+      // Check for sequential or near-sequential numbering
+      if (num > lastNum || num === 1) {
+        numberedLineCount++;
+        lastNum = num;
+      }
+    }
+  }
+
+  // Need at least 2 numbered lines to consider this a numbered format
+  if (numberedLineCount < 2) return [];
+
+  // Second pass: split into prompts at each numbered line
+  const prompts = [];
+  let currentPrompt = '';
+
+  for (const line of lines) {
+    const match = line.match(numberPrefixRegex);
+    if (match) {
+      // Save previous prompt if exists
+      if (currentPrompt.trim().length > 0) {
+        prompts.push(currentPrompt.trim());
+      }
+      // Start new prompt with the number prefix stripped
+      currentPrompt = line.replace(numberPrefixRegex, '');
+    } else {
+      // Continuation line — append to current prompt
+      const trimmed = line.trim();
+      if (trimmed.length > 0 && !trimmed.startsWith('#')) {
+        if (currentPrompt.length > 0) {
+          currentPrompt += ' ' + trimmed;
+        } else {
+          currentPrompt = trimmed;
+        }
+      }
+    }
+  }
+
+  // Don't forget the last prompt
+  if (currentPrompt.trim().length > 0) {
+    prompts.push(currentPrompt.trim());
+  }
+
+  return prompts.filter(p => p.length > 0);
+}
+
+/**
+ * Strip common numbering prefixes from a single line.
+ * E.g., "1. prompt text" -> "prompt text"
+ *       "42) prompt text" -> "prompt text"
+ *       "3 - prompt text" -> "prompt text"
+ *
+ * @param {string} line - A single prompt line
+ * @returns {string} The line with any leading number prefix removed
+ */
+function stripNumberPrefix(line) {
+  if (!line) return '';
+  return line.replace(/^\s*\d{1,4}\s*[.):\-]\s*/, '').trim();
 }
 
 /* ============================================================
@@ -306,7 +401,9 @@ function focusPromptInput(el) {
 }
 
 /**
- * Clear the prompt input element.
+ * Clear the prompt input element completely.
+ * Uses multiple strategies to ensure contenteditable is truly empty,
+ * preventing prompt accumulation across submissions.
  */
 function clearPromptInput(el) {
   if (!el) return;
@@ -316,12 +413,8 @@ function clearPromptInput(el) {
                              el.getAttribute('contenteditable') === '';
 
   if (isContentEditable) {
-    // Select all and delete with proper beforeinput/input events for React
-    const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    selection.removeAllRanges();
-    selection.addRange(range);
+    // Strategy 1: Select all via execCommand and delete
+    document.execCommand('selectAll', false, null);
 
     el.dispatchEvent(new InputEvent('beforeinput', {
       inputType: 'deleteContentBackward',
@@ -334,6 +427,42 @@ function clearPromptInput(el) {
       inputType: 'deleteContentBackward',
       bubbles: true, cancelable: false, composed: true
     }));
+
+    // Strategy 2: If text still remains, force-clear via Selection API
+    const remainingText = (el.textContent || '').trim();
+    if (remainingText.length > 0) {
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'deleteContentBackward',
+        bubbles: true, cancelable: true, composed: true
+      }));
+
+      document.execCommand('delete', false, null);
+
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'deleteContentBackward',
+        bubbles: true, cancelable: false, composed: true
+      }));
+    }
+
+    // Strategy 3: If STILL not empty, nuke the innerHTML directly
+    // and fire synthetic events to force React to sync
+    if ((el.textContent || '').trim().length > 0) {
+      el.innerHTML = '';
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'deleteContentBackward',
+        bubbles: true, cancelable: true, composed: true
+      }));
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'deleteContentBackward',
+        bubbles: true, cancelable: false, composed: true
+      }));
+    }
   } else {
     setNativeValue(el, '');
   }
@@ -353,26 +482,41 @@ function clearPromptInput(el) {
  */
 function simulateTyping(el, text, delayMs) {
   return new Promise(async (resolve) => {
-    focusPromptInput(el);
-    clearPromptInput(el);
-
     const isContentEditable = el.getAttribute('contenteditable') === 'true' ||
                                el.getAttribute('contenteditable') === '';
+
+    // CRITICAL: Fully clear input before typing new prompt.
+    // Call clear multiple times with small delays to ensure React state syncs.
+    focusPromptInput(el);
+    clearPromptInput(el);
+    await new Promise(r => setTimeout(r, 100));
+
+    // Verify the input is actually empty
+    if (isContentEditable) {
+      const remaining = (el.textContent || '').trim();
+      if (remaining.length > 0) {
+        addLog(`Input still has text after clear: "${remaining.substring(0, 30)}..." — force clearing.`, 'warn');
+        // Force clear again
+        el.innerHTML = '';
+        focusPromptInput(el);
+        clearPromptInput(el);
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
 
     if (isContentEditable) {
       // For contenteditable (React/Next.js apps like Google Flow):
       // We must type character-by-character with proper beforeinput/input
       // events so React's Input Events Level 2 handling picks up each change.
-      // This is the ONLY reliable way to update React state on contenteditable.
 
       // Find the actual text target — often a <p> inside the contenteditable
       let textTarget = el.querySelector('p') || el;
 
-      // Place cursor at end of the text target
+      // Place cursor at START of the text target (not end — we just cleared it)
       const selection = window.getSelection();
       const range = document.createRange();
       range.selectNodeContents(textTarget);
-      range.collapse(false); // collapse to end
+      range.collapse(true); // collapse to START
       selection.removeAllRanges();
       selection.addRange(range);
 
@@ -409,7 +553,7 @@ function simulateTyping(el, text, delayMs) {
         }
       }
 
-      addLog(`Typed ${text.length} chars with beforeinput events into contenteditable`, 'info');
+      addLog(`Typed ${text.length} chars into contenteditable (cleared first).`, 'info');
       resolve();
       return;
     }

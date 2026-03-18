@@ -201,13 +201,29 @@
       if (isStopped || runId !== currentRunId) return;
     }
 
-    // Clear, focus, type
+    // Clear input thoroughly before typing new prompt
+    // This prevents prompt accumulation (old prompts leaking into new ones)
+    addLog(`Clearing input before prompt ${index + 1}...`, 'info');
+    focusPromptInput(inputEl);
     clearPromptInput(inputEl);
-    await sleep(200);
+    await sleep(300);
+    // Verify input is empty
+    const isContentEditable = inputEl.getAttribute('contenteditable') === 'true' ||
+                               inputEl.getAttribute('contenteditable') === '';
+    if (isContentEditable) {
+      const leftover = (inputEl.textContent || '').trim();
+      if (leftover.length > 0) {
+        addLog(`Input not empty after clear ("${leftover.substring(0, 30)}..."), force clearing.`, 'warn');
+        inputEl.innerHTML = '';
+        await sleep(100);
+        clearPromptInput(inputEl);
+        await sleep(200);
+      }
+    }
     focusPromptInput(inputEl);
     await sleep(200);
 
-    addLog('Typing prompt...', 'info');
+    addLog(`Typing prompt ${index + 1}: "${prompt.substring(0, 50)}..."`, 'info');
     const typingDelay = settings.typingDelayMs || 20;
     await simulateTyping(inputEl, prompt, typingDelay);
     addLog('Prompt typed.', 'success');
