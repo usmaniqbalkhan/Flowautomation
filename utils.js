@@ -97,13 +97,95 @@ function findPromptInput(customSelectors) {
  * @returns {HTMLElement|null}
  */
 function findSubmitButton(customSelectors) {
+  // === PRIORITY 1: Google Flow / positional detection ===
+  // On Google Flow, the → arrow button has no aria-label or distinctive text.
+  // We MUST detect it by position (rightmost in input bar) BEFORE generic selectors,
+  // because the generic selectors match the + (add/create) button incorrectly.
+  const promptInput = findPromptInput([]);
+  if (promptInput) {
+    const inputRect = promptInput.getBoundingClientRect();
+    const allCandidates = [];
+
+    // Walk up from the input to find the full input bar container
+    let container = promptInput.parentElement;
+    for (let i = 0; i < 8 && container; i++) {
+      container = container.parentElement;
+    }
+    if (!container) container = document.body;
+
+    const btns = container.querySelectorAll('button, [role="button"]');
+    for (const btn of btns) {
+      if (btn !== promptInput && isElementVisible(btn) && !btn.disabled) {
+        const rect = btn.getBoundingClientRect();
+        // Only buttons in the same vertical band as the input (same row)
+        if (Math.abs(rect.top - inputRect.top) < 80) {
+          allCandidates.push(btn);
+        }
+      }
+    }
+
+    // Debug: log all candidates found near the input
+    for (const btn of allCandidates) {
+      const rect = btn.getBoundingClientRect();
+      const hasSvg = btn.querySelector('svg') !== null;
+      const text = (btn.textContent || '').trim().substring(0, 30);
+      addLog(`[Submit debug] text="${text}" svg=${hasSvg} right=${Math.round(rect.right)} w=${Math.round(rect.width)} h=${Math.round(rect.height)}`, 'info');
+    }
+
+    if (allCandidates.length > 1) {
+      // Multiple buttons near the input — use smart detection
+
+      // Strategy A: Circular button with SVG (the → arrow icon)
+      const svgCircular = allCandidates.filter(btn => {
+        const rect = btn.getBoundingClientRect();
+        const hasSvg = btn.querySelector('svg') !== null;
+        const isCircular = Math.abs(rect.width - rect.height) < 12 && rect.width > 20 && rect.width < 80;
+        return hasSvg && isCircular;
+      });
+      if (svgCircular.length > 0) {
+        const best = svgCircular.reduce((a, b) =>
+          a.getBoundingClientRect().right > b.getBoundingClientRect().right ? a : b
+        );
+        addLog(`[Submit] Strategy A: circular SVG button.`, 'success');
+        return best;
+      }
+
+      // Strategy B: Rightmost button that does NOT contain text like "add", "+", "create", model names
+      const submitCandidates = allCandidates.filter(btn => {
+        const text = (btn.textContent || '').toLowerCase().trim();
+        // Skip buttons that are clearly NOT the submit arrow
+        const isPlus = text === '+' || text === 'add' || text.includes('add_');
+        const isMenu = btn.getAttribute('aria-haspopup') === 'menu';
+        const hasLongText = text.length > 5; // The → arrow has no/minimal text
+        return !isPlus && !isMenu && !hasLongText;
+      });
+      if (submitCandidates.length > 0) {
+        const best = submitCandidates.reduce((a, b) =>
+          a.getBoundingClientRect().right > b.getBoundingClientRect().right ? a : b
+        );
+        addLog(`[Submit] Strategy B: rightmost minimal-text button.`, 'success');
+        return best;
+      }
+
+      // Strategy C: Just pick the absolute rightmost button
+      const rightmost = allCandidates.reduce((a, b) =>
+        a.getBoundingClientRect().right > b.getBoundingClientRect().right ? a : b
+      );
+      addLog(`[Submit] Strategy C: absolute rightmost button.`, 'success');
+      return rightmost;
+    } else if (allCandidates.length === 1) {
+      addLog(`[Submit] Only one button near input.`, 'success');
+      return allCandidates[0];
+    }
+  }
+
+  // === PRIORITY 2: Generic selectors (for non-Flow sites) ===
   const selectors = [
     ...(customSelectors || []),
     'button[type="submit"]',
     'button[aria-label*="generate" i]',
     'button[aria-label*="submit" i]',
     'button[aria-label*="send" i]',
-    'button[aria-label*="create" i]',
     '[role="button"][aria-label*="generate" i]',
     '[role="button"][aria-label*="send" i]',
     'button[aria-label*="run" i]',
@@ -123,7 +205,8 @@ function findSubmitButton(customSelectors) {
   }
 
   // Heuristic: scan all visible buttons for text matching common submit words
-  const keywords = ['generate', 'submit', 'send', 'create'];
+  // NOTE: "create" removed — it matches the + (add/create) button on Flow
+  const keywords = ['generate', 'submit', 'send'];
   const buttons = document.querySelectorAll('button, [role="button"]');
   for (const btn of buttons) {
     const text = (btn.textContent || '').toLowerCase().trim();
@@ -135,100 +218,6 @@ function findSubmitButton(customSelectors) {
       if (combined.includes(kw) && isElementVisible(btn) && !btn.disabled) {
         return btn;
       }
-    }
-  }
-
-  // Google Flow specific: find the submit arrow → button in the prompt input bar.
-  // The → arrow is a circular button with an SVG icon, at the far right of the input bar.
-  const promptInput = findPromptInput([]);
-  if (promptInput) {
-    const inputRect = promptInput.getBoundingClientRect();
-    const allCandidates = [];
-
-    // Walk up 8 levels to ensure we reach the full input bar wrapper
-    let container = promptInput.parentElement;
-    for (let i = 0; i < 8 && container; i++) {
-      container = container.parentElement;
-    }
-    // If we walked up enough, search from there; otherwise use document body
-    if (!container) container = document.body;
-
-    const btns = container.querySelectorAll('button, [role="button"]');
-    for (const btn of btns) {
-      if (btn !== promptInput && isElementVisible(btn) && !btn.disabled) {
-        const rect = btn.getBoundingClientRect();
-        // Must be in the same vertical band as the input (within 80px)
-        if (Math.abs(rect.top - inputRect.top) < 80) {
-          allCandidates.push(btn);
-        }
-      }
-    }
-
-    // Debug: log all candidates
-    for (const btn of allCandidates) {
-      const rect = btn.getBoundingClientRect();
-      const hasSvg = btn.querySelector('svg') !== null;
-      const text = (btn.textContent || '').trim().substring(0, 20);
-      addLog(`[Submit debug] btn text="${text}" hasSVG=${hasSvg} right=${Math.round(rect.right)} w=${Math.round(rect.width)} h=${Math.round(rect.height)}`, 'info');
-    }
-
-    if (allCandidates.length > 0) {
-      // Strategy 1: Find a circular button with SVG (the → arrow icon)
-      // The arrow button is circular (width ≈ height) and contains an SVG
-      const svgButtons = allCandidates.filter(btn => {
-        const rect = btn.getBoundingClientRect();
-        const hasSvg = btn.querySelector('svg') !== null;
-        const isCircular = Math.abs(rect.width - rect.height) < 10 && rect.width > 20 && rect.width < 80;
-        return hasSvg && isCircular;
-      });
-
-      if (svgButtons.length > 0) {
-        // Among circular SVG buttons, pick the rightmost
-        let best = svgButtons[0];
-        let bestRight = best.getBoundingClientRect().right;
-        for (let i = 1; i < svgButtons.length; i++) {
-          const r = svgButtons[i].getBoundingClientRect().right;
-          if (r > bestRight) { best = svgButtons[i]; bestRight = r; }
-        }
-        addLog(`[Submit] Picked circular SVG button at right=${Math.round(bestRight)}`, 'success');
-        return best;
-      }
-
-      // Strategy 2: Find button with aria-label like send/submit
-      const ariaBtn = allCandidates.find(btn => {
-        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-        return label.includes('send') || label.includes('submit') || label.includes('generate');
-      });
-      if (ariaBtn) {
-        addLog('[Submit] Picked button by aria-label.', 'success');
-        return ariaBtn;
-      }
-
-      // Strategy 3: Find any button with SVG that is to the RIGHT of the input
-      const rightSvgBtns = allCandidates.filter(btn => {
-        const rect = btn.getBoundingClientRect();
-        return btn.querySelector('svg') !== null && rect.left > inputRect.right - 50;
-      });
-      if (rightSvgBtns.length > 0) {
-        const best = rightSvgBtns.reduce((a, b) =>
-          a.getBoundingClientRect().right > b.getBoundingClientRect().right ? a : b
-        );
-        addLog('[Submit] Picked rightmost SVG button to right of input.', 'success');
-        return best;
-      }
-
-      // Strategy 4: Fallback — rightmost button that is NOT the + button
-      const nonPlusBtns = allCandidates.filter(btn => {
-        const text = (btn.textContent || '').trim();
-        return text !== '+' && text !== '' && !text.startsWith('+');
-      });
-      // If filtering removed everything, use all candidates
-      const pool = nonPlusBtns.length > 0 ? nonPlusBtns : allCandidates;
-      const rightmost = pool.reduce((a, b) =>
-        a.getBoundingClientRect().right > b.getBoundingClientRect().right ? a : b
-      );
-      addLog(`[Submit] Fallback: picked rightmost non-+ button.`, 'success');
-      return rightmost;
     }
   }
 
