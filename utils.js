@@ -48,6 +48,13 @@ function isElementVisible(el) {
 }
 
 /**
+ * Check if an element is inside the extension's panel (must be excluded from DOM detection).
+ */
+function isInsidePanel(el) {
+  return el && el.closest && el.closest('#gflow-panel, #gflow-panel-toggle');
+}
+
+/**
  * Find the prompt input element using a cascade of selectors.
  * @param {string[]} customSelectors - User-defined selectors from options
  * @returns {HTMLElement|null}
@@ -73,7 +80,7 @@ function findPromptInput(customSelectors) {
     try {
       const elements = document.querySelectorAll(selector);
       for (const el of elements) {
-        if (isElementVisible(el)) return el;
+        if (isElementVisible(el) && !isInsidePanel(el)) return el;
       }
     } catch (e) {
       // Invalid selector — skip
@@ -85,7 +92,7 @@ function findPromptInput(customSelectors) {
     'textarea, [contenteditable="true"], [role="textbox"], input[type="text"]'
   );
   for (const el of allEditable) {
-    if (isElementVisible(el)) return el;
+    if (isElementVisible(el) && !isInsidePanel(el)) return el;
   }
 
   return null;
@@ -115,7 +122,7 @@ function findSubmitButton(customSelectors) {
 
     const btns = container.querySelectorAll('button, [role="button"]');
     for (const btn of btns) {
-      if (btn !== promptInput && isElementVisible(btn) && !btn.disabled) {
+      if (btn !== promptInput && isElementVisible(btn) && !btn.disabled && !isInsidePanel(btn)) {
         const rect = btn.getBoundingClientRect();
         // Only buttons in the same vertical band as the input (same row)
         if (Math.abs(rect.top - inputRect.top) < 80) {
@@ -197,7 +204,7 @@ function findSubmitButton(customSelectors) {
     try {
       const elements = document.querySelectorAll(selector);
       for (const el of elements) {
-        if (isElementVisible(el) && !el.disabled) return el;
+        if (isElementVisible(el) && !el.disabled && !isInsidePanel(el)) return el;
       }
     } catch (e) {
       // Invalid selector — skip
@@ -209,6 +216,7 @@ function findSubmitButton(customSelectors) {
   const keywords = ['generate', 'submit', 'send'];
   const buttons = document.querySelectorAll('button, [role="button"]');
   for (const btn of buttons) {
+    if (isInsidePanel(btn)) continue;
     const text = (btn.textContent || '').toLowerCase().trim();
     const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
     const title = (btn.getAttribute('title') || '').toLowerCase();
