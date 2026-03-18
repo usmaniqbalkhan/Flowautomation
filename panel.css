@@ -194,7 +194,8 @@
   background: rgba(255, 255, 255, 0.02);
 }
 
-.gflow-tab.gflow-tab-active {
+.gflow-tab.gflow-tab-active,
+.gflow-tab.active {
   color: #4ecca3;
   border-bottom-color: #4ecca3;
 }
@@ -212,11 +213,7 @@
   overflow-y: auto;
   overflow-x: hidden;
   padding: 12px;
-  display: none;
-}
-
-.gflow-tab-content.gflow-tab-active {
-  display: block;
+  /* Visibility controlled by inline styles in panel.js */
 }
 
 /* ------------------------------------------------------------
@@ -285,7 +282,8 @@
   background: #0f2035;
 }
 
-.gflow-mode-btn.gflow-mode-active {
+.gflow-mode-btn.gflow-mode-active,
+.gflow-mode-btn.active {
   border-color: #4ecca3;
   color: #4ecca3;
   background: rgba(78, 204, 163, 0.08);
@@ -366,68 +364,12 @@
   border-radius: 6px;
 }
 
-.gflow-prompt-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 11px;
-}
-
-.gflow-prompt-table thead {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-}
-
-.gflow-prompt-table th {
-  background: #0d1117;
-  color: #888;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  font-size: 10px;
-  padding: 7px 8px;
-  text-align: left;
-  border-bottom: 1px solid #2a2a4a;
-}
-
-.gflow-prompt-table td {
-  padding: 6px 8px;
-  border-bottom: 1px solid rgba(42, 42, 74, 0.5);
-  color: #ccc;
-  vertical-align: middle;
-}
-
-.gflow-prompt-table tbody tr:hover {
-  background: rgba(78, 204, 163, 0.04);
-}
-
-.gflow-prompt-table .col-num {
-  width: 36px;
-  text-align: center;
-  color: #555;
-  font-weight: 600;
-}
-
-.gflow-prompt-table .col-prompt {
-  max-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.gflow-prompt-table .col-status {
-  width: 80px;
-  text-align: center;
-}
+/* Prompt table — redefined below as div-based layout to match panel.js */
 
 /* ------------------------------------------------------------
    11. CONTROL TAB — Queue Controls
    ------------------------------------------------------------ */
-.gflow-queue-controls {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
+/* Queue controls — redefined below to match panel.js layout */
 
 .gflow-toggle-row {
   display: flex;
@@ -475,21 +417,13 @@
   margin-bottom: 4px;
 }
 
-/* Progress bar */
+/* Progress bar — legacy aliases (panel.js uses .gflow-progress-bar as wrapper) */
 .gflow-progress-wrap {
   position: relative;
   height: 18px;
   background: #0d1117;
   border-radius: 9px;
   overflow: hidden;
-}
-
-.gflow-progress-bar {
-  height: 100%;
-  width: 0%;
-  background: linear-gradient(90deg, #0f3460, #4ecca3);
-  border-radius: 9px;
-  transition: width 0.4s ease;
 }
 
 .gflow-progress-text {
@@ -527,13 +461,7 @@
 /* ------------------------------------------------------------
    14. GALLERY TAB — View Controls
    ------------------------------------------------------------ */
-.gflow-gallery-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 10px;
-}
+/* Gallery controls — redefined below to match panel.js layout */
 
 .gflow-segmented {
   display: inline-flex;
@@ -704,12 +632,7 @@
   line-height: 1.35;
 }
 
-.gflow-form-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px 12px;
-  align-items: start;
-}
+/* Original grid layout removed — panel.js uses flex rows (defined below) */
 
 .gflow-form-divider {
   border: none;
@@ -1374,4 +1297,354 @@
     width: 100vw;
     border-left: none;
   }
+}
+
+/* ------------------------------------------------------------
+   34. PANEL.JS CLASS ALIASES & MISSING DEFINITIONS
+   Classes used by panel.js HTML that need CSS rules.
+   ------------------------------------------------------------ */
+
+/* Header — panel.js uses gflow-panel-header */
+.gflow-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #0d1117;
+  border-bottom: 1px solid #2a2a4a;
+  flex-shrink: 0;
+  min-height: 48px;
+}
+
+.gflow-header-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.gflow-logo {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.gflow-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #f0f0f0;
+  letter-spacing: 0.2px;
+}
+
+.gflow-version {
+  font-size: 10px;
+  color: #555;
+  margin-left: 4px;
+  font-weight: 400;
+}
+
+/* Sections */
+.gflow-section {
+  background: #16213e;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.gflow-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+/* Button variants used by panel.js */
+.gflow-btn-lg {
+  width: 100%;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+.gflow-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+/* Prompt table (div-based, not table) */
+.gflow-prompt-table {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #2a2a4a;
+  border-radius: 6px;
+}
+
+.gflow-prompt-table-empty {
+  text-align: center;
+  padding: 16px;
+  color: #555;
+  font-size: 12px;
+}
+
+.gflow-prompt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-bottom: 1px solid rgba(42, 42, 74, 0.5);
+  font-size: 11px;
+}
+
+.gflow-prompt-row:hover {
+  background: rgba(78, 204, 163, 0.04);
+}
+
+.gflow-prompt-num {
+  width: 28px;
+  text-align: center;
+  color: #555;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.gflow-prompt-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #ccc;
+}
+
+.gflow-prompt-count {
+  font-size: 11px;
+  color: #666;
+  margin-top: 4px;
+}
+
+/* Progress bar — panel.js uses gflow-progress-bar as wrapper, gflow-progress-fill as fill */
+.gflow-progress-bar {
+  position: relative;
+  height: 18px;
+  background: #0d1117;
+  border-radius: 9px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.gflow-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #0f3460, #4ecca3);
+  border-radius: 9px;
+  transition: width 0.4s ease;
+}
+
+/* Live status */
+.gflow-live-status {
+  background: #0d1b2a;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.gflow-status-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.gflow-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4ecca3;
+  flex-shrink: 0;
+  animation: gflow-pulse 1.5s ease-in-out infinite;
+}
+
+.gflow-status-details {
+  font-size: 11px;
+  color: #888;
+  margin-top: 4px;
+}
+
+/* Queue controls layout */
+.gflow-queue-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Gallery grid */
+.gflow-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 6px;
+}
+
+.gflow-gallery-item {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0d1117;
+  border: 1px solid #2a2a4a;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.gflow-gallery-item:hover {
+  border-color: #4ecca3;
+  box-shadow: 0 0 8px rgba(78, 204, 163, 0.15);
+}
+
+.gflow-gallery-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.gflow-gallery-item-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 4px 6px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
+  font-size: 9px;
+  color: #ccc;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.gflow-gallery-item:hover .gflow-gallery-item-overlay {
+  opacity: 1;
+}
+
+.gflow-gallery-item-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Gallery controls */
+.gflow-gallery-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+/* Log container */
+.gflow-log-container {
+  background: #0d1117;
+  border-radius: 6px;
+  padding: 8px;
+  max-height: calc(100vh - 240px);
+  overflow-y: auto;
+  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* Empty states */
+.gflow-empty-state {
+  text-align: center;
+  padding: 20px 16px;
+  color: #555;
+  font-size: 12px;
+}
+
+/* Failed list */
+.gflow-failed-list {
+  max-height: 120px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+}
+
+/* Radio group */
+.gflow-radio-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: #aaa;
+}
+
+.gflow-radio-group input[type="radio"] {
+  margin-right: 3px;
+  accent-color: #4ecca3;
+}
+
+/* Small select variant */
+.gflow-select-sm {
+  width: auto;
+  min-width: 70px;
+  padding: 4px 24px 4px 6px;
+  font-size: 11px;
+}
+
+/* Form row fix — also support single-column layout */
+.gflow-form-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.gflow-form-row label {
+  font-size: 12px;
+  color: #bbb;
+  flex: 1;
+}
+
+.gflow-form-row select,
+.gflow-form-row input[type="number"],
+.gflow-form-row input[type="text"] {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 60px;
+  max-width: 120px;
+}
+
+/* Toggle checkbox — panel.js uses class="gflow-toggle" directly on checkboxes */
+input.gflow-toggle[type="checkbox"] {
+  width: 36px;
+  height: 20px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: #2a2a4a;
+  border-radius: 10px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+input.gflow-toggle[type="checkbox"]::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #888;
+  border-radius: 50%;
+  transition: transform 0.2s, background 0.2s;
+}
+
+input.gflow-toggle[type="checkbox"]:checked {
+  background: rgba(78, 204, 163, 0.3);
+}
+
+input.gflow-toggle[type="checkbox"]:checked::before {
+  transform: translateX(16px);
+  background: #4ecca3;
 }

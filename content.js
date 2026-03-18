@@ -31,56 +31,69 @@
     const data = event.data;
     if (!data || typeof data.type !== 'string' || !data.type.startsWith('GFLOW_')) return;
 
+    // api-interceptor.js wraps data in a `payload` field
+    const payload = data.payload || {};
+
     switch (data.type) {
-      case 'GFLOW_AUTH_CAPTURED':
-        // Auth context captured from intercepted API calls
-        capturedAuthContext = data.authContext;
-        addLog('API auth context captured.', 'success');
-        // Store in background for persistence
+      case 'GFLOW_AUTH_UPDATED':
+        // Auth context updated from intercepted API calls
+        capturedAuthContext = payload;
+        addLog(`API auth context updated (${payload.headerCount || 0} headers).`, 'success');
         chrome.runtime.sendMessage({
           action: 'API_AUTH_CAPTURED',
-          authContext: data.authContext
+          authContext: payload
         });
         break;
 
-      case 'GFLOW_API_REQUEST':
-        // Intercepted outgoing API request
-        if (data.url) {
-          // Track discovered endpoints
-          const urlPath = new URL(data.url, window.location.origin).pathname;
-          capturedApiEndpoints[urlPath] = {
-            method: data.method || 'POST',
-            lastSeen: Date.now()
-          };
+      case 'GFLOW_TRPC_REQUEST':
+        // Intercepted outgoing tRPC request
+        if (payload.url) {
+          try {
+            const urlPath = new URL(payload.url, window.location.origin).pathname;
+            capturedApiEndpoints[urlPath] = {
+              method: payload.method || 'POST',
+              procedures: payload.procedures || [],
+              lastSeen: Date.now()
+            };
+          } catch (e) { /* ignore URL parse errors */ }
         }
         break;
 
-      case 'GFLOW_API_RESPONSE':
-        // Intercepted API response — check for image URLs
-        if (data.imageUrls && data.imageUrls.length > 0) {
+      case 'GFLOW_TRPC_RESPONSE':
+        // Intercepted tRPC response — logged for debugging
+        if (payload.hasImages && payload.imageCount > 0) {
+          addLog(`tRPC response: ${payload.imageCount} images from ${(payload.procedures || []).join(',')}.`, 'info');
+        }
+        break;
+
+      case 'GFLOW_IMAGES_DISCOVERED':
+        // New images discovered from API responses
+        if (payload.newUrls && payload.newUrls.length > 0) {
           chrome.runtime.sendMessage({
             action: 'IMAGES_CAPTURED',
-            images: data.imageUrls,
-            promptText: data.promptText || '',
-            projectId: data.projectId || ''
+            images: payload.newUrls,
+            promptText: payload.procedure || '',
+            projectId: ''
           });
-          addLog(`Captured ${data.imageUrls.length} image URLs from API response.`, 'success');
+          addLog(`Captured ${payload.newUrls.length} image URLs from API.`, 'success');
         }
         break;
 
       case 'GFLOW_SUBMIT_RESULT':
         // Result from API-based prompt submission
-        if (data.success) {
+        if (payload.success) {
           addLog('API submission successful.', 'success');
         } else {
-          addLog('API submission failed: ' + (data.error || 'unknown'), 'error');
+          addLog('API submission failed: ' + (payload.error || 'unknown'), 'error');
         }
         break;
 
-      case 'GFLOW_ENDPOINT_DISCOVERED':
-        // New API endpoint discovered
-        addLog(`API endpoint discovered: ${data.endpoint}`, 'info');
-        capturedApiEndpoints[data.endpoint] = data.details;
+      case 'GFLOW_INTERCEPTOR_READY':
+        addLog('API interceptor ready.', 'info');
+        break;
+
+      case 'GFLOW_TRPC_ERROR':
+        addLog(`tRPC error: ${payload.error || 'unknown'} for ${payload.url || ''}`, 'warn');
         break;
     }
   });
@@ -92,10 +105,12 @@
    */
   function submitViaAPI(promptText) {
     return new Promise((resolve) => {
-      // Send message to MAIN world api-interceptor
+      // Send message to MAIN world api-interceptor (uses payload wrapper)
       window.postMessage({
         type: 'GFLOW_SUBMIT_PROMPT',
-        prompt: promptText,
+        payload: {
+          prompt: promptText
+        },
         timestamp: Date.now()
       }, '*');
 
@@ -108,7 +123,9 @@
         if (event.data?.type === 'GFLOW_SUBMIT_RESULT') {
           clearTimeout(timeout);
           window.removeEventListener('message', onResult);
-          resolve(event.data.success || false);
+          // api-interceptor wraps result in payload
+          const payload = event.data.payload || event.data;
+          resolve(payload.success || false);
         }
       }
       window.addEventListener('message', onResult);
