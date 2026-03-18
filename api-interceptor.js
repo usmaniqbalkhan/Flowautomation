@@ -486,6 +486,326 @@
   }
 
   /* ============================================================
+     REACT-COMPATIBLE INPUT TYPING (MAIN WORLD)
+     ============================================================ */
+
+  /**
+   * Type text into Flow's contenteditable prompt input using React-compatible
+   * methods. Runs in MAIN world so we have access to React fiber/props.
+   *
+   * Strategy order:
+   * 1. Find React fiber/props on the contenteditable and call onChange/onInput
+   * 2. Use clipboard paste simulation (React handles paste events natively)
+   * 3. Fallback to execCommand with synthetic events
+   *
+   * @param {string} text - The prompt text to type
+   * @returns {boolean} Whether the text was set successfully
+   */
+  function typeIntoReactInput(text) {
+    // Find the contenteditable input (skip extension panel elements)
+    var el = findFlowInput();
+    if (!el) {
+      warn('Could not find Flow prompt input.');
+      return false;
+    }
+
+    log('Found input element: %s', el.tagName);
+
+    // Focus the element
+    el.focus();
+
+    // Clear existing content first
+    clearReactInput(el);
+
+    // Try Strategy 1: React fiber/props
+    var reactSuccess = setViaReactProps(el, text);
+    if (reactSuccess) {
+      log('Text set via React props/fiber.');
+      return true;
+    }
+
+    // Try Strategy 2: Clipboard paste simulation
+    var pasteSuccess = setViaPaste(el, text);
+    if (pasteSuccess) {
+      log('Text set via paste simulation.');
+      return true;
+    }
+
+    // Strategy 3: execCommand fallback (may not update React state)
+    setViaExecCommand(el, text);
+    log('Text set via execCommand (React state may not be synced).');
+    return true;
+  }
+
+  /**
+   * Find Flow's prompt input, skipping extension panel elements.
+   */
+  function findFlowInput() {
+    var candidates = document.querySelectorAll(
+      '[contenteditable="true"], [role="textbox"], textarea'
+    );
+    for (var i = 0; i < candidates.length; i++) {
+      var el = candidates[i];
+      // Skip elements inside our panel
+      if (el.closest && el.closest('#gflow-panel')) continue;
+      // Check visibility
+      var rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        var style = window.getComputedStyle(el);
+        if (style.display !== 'none' && style.visibility !== 'hidden') {
+          return el;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Clear a React contenteditable input.
+   */
+  function clearReactInput(el) {
+    el.focus();
+
+    // Select all and delete
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+
+    // Also try via React props
+    var propsKey = getReactPropsKey(el);
+    if (propsKey) {
+      var props = el[propsKey];
+      if (props && props.onChange) {
+        // Create a minimal synthetic event
+        el.textContent = '';
+        var fakeEvent = createSyntheticEvent(el);
+        try { props.onChange(fakeEvent); } catch (e) { /* ignore */ }
+      }
+    }
+
+    // Fire standard events
+    el.dispatchEvent(new InputEvent('beforeinput', {
+      inputType: 'deleteContentBackward', bubbles: true, cancelable: true, composed: true
+    }));
+    el.dispatchEvent(new InputEvent('input', {
+      inputType: 'deleteContentBackward', bubbles: true, cancelable: false, composed: true
+    }));
+  }
+
+  /**
+   * Strategy 1: Set text via React's fiber/props system.
+   * React attaches __reactProps$ or __reactFiber$ to DOM elements.
+   * We can find the onChange/onInput handler and call it directly.
+   */
+  function setViaReactProps(el, text) {
+    // Try on the element itself and its parent chain
+    var targets = [el];
+    var parent = el.parentElement;
+    for (var d = 0; d < 5 && parent; d++) {
+      targets.push(parent);
+      parent = parent.parentElement;
+    }
+
+    for (var t = 0; t < targets.length; t++) {
+      var target = targets[t];
+      var propsKey = getReactPropsKey(target);
+      if (!propsKey) continue;
+
+      var props = target[propsKey];
+      if (!props) continue;
+
+      // Check for onChange, onInput, onBeforeInput handlers
+      var handler = props.onChange || props.onInput || props.onBeforeInput;
+      if (!handler) continue;
+
+      log('Found React handler on %s (key: %s)', target.tagName, propsKey);
+
+      // Set the DOM content
+      var textNode = el.querySelector('p');
+      if (textNode) {
+        textNode.textContent = text;
+      } else {
+        el.textContent = text;
+      }
+
+      // Call the React handler with a synthetic event
+      var syntheticEvent = createSyntheticEvent(el);
+      try {
+        handler(syntheticEvent);
+        log('React handler called successfully.');
+
+        // Also fire native events to ensure all listeners are notified
+        el.dispatchEvent(new InputEvent('input', {
+          inputType: 'insertText', data: text,
+          bubbles: true, cancelable: false, composed: true
+        }));
+
+        return true;
+      } catch (err) {
+        warn('React handler threw:', err);
+      }
+    }
+
+    // Also try: find React internal instance and traverse fiber tree
+    var fiberKey = getReactFiberKey(el);
+    if (fiberKey) {
+      var fiber = el[fiberKey];
+      if (fiber) {
+        // Walk up the fiber tree looking for a component with a state setter
+        var current = fiber;
+        for (var i = 0; i < 20 && current; i++) {
+          if (current.memoizedProps) {
+            var mProps = current.memoizedProps;
+            var mHandler = mProps.onChange || mProps.onInput || mProps.onBeforeInput;
+            if (mHandler) {
+              log('Found React handler via fiber tree (depth %d)', i);
+              var textEl = el.querySelector('p') || el;
+              textEl.textContent = text;
+              try {
+                mHandler(createSyntheticEvent(el));
+                el.dispatchEvent(new InputEvent('input', {
+                  inputType: 'insertText', data: text,
+                  bubbles: true, cancelable: false, composed: true
+                }));
+                return true;
+              } catch (err2) {
+                warn('Fiber handler threw:', err2);
+              }
+            }
+          }
+          current = current.return;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Strategy 2: Simulate a paste event with the text.
+   * React handles paste events on contenteditable and updates internal state.
+   */
+  function setViaPaste(el, text) {
+    el.focus();
+
+    // Select all first (to replace any existing content)
+    document.execCommand('selectAll', false, null);
+
+    try {
+      // Create a DataTransfer with the text
+      var dt = new DataTransfer();
+      dt.setData('text/plain', text);
+
+      // Fire beforeinput with insertFromPaste
+      var beforeInput = new InputEvent('beforeinput', {
+        inputType: 'insertFromPaste',
+        data: text,
+        dataTransfer: dt,
+        bubbles: true,
+        cancelable: true,
+        composed: true
+      });
+      el.dispatchEvent(beforeInput);
+
+      // Fire the paste event
+      var pasteEvent = new ClipboardEvent('paste', {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: dt
+      });
+      var pasteHandled = !el.dispatchEvent(pasteEvent); // returns false if preventDefault was called
+
+      if (pasteHandled) {
+        // React handled the paste — the text should be in React's state now
+        // Fire the input event
+        el.dispatchEvent(new InputEvent('input', {
+          inputType: 'insertFromPaste',
+          data: text,
+          bubbles: true,
+          cancelable: false,
+          composed: true
+        }));
+        return true;
+      }
+
+      // If paste event wasn't handled by React, insert text manually
+      document.execCommand('insertText', false, text);
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertFromPaste',
+        data: text,
+        bubbles: true,
+        cancelable: false,
+        composed: true
+      }));
+
+      return false; // Can't confirm React picked it up
+    } catch (e) {
+      warn('Paste simulation error:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Strategy 3: Classic execCommand approach (fallback).
+   */
+  function setViaExecCommand(el, text) {
+    el.focus();
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+
+    el.dispatchEvent(new InputEvent('beforeinput', {
+      inputType: 'insertText', data: text,
+      bubbles: true, cancelable: true, composed: true
+    }));
+
+    document.execCommand('insertText', false, text);
+
+    el.dispatchEvent(new InputEvent('input', {
+      inputType: 'insertText', data: text,
+      bubbles: true, cancelable: false, composed: true
+    }));
+  }
+
+  /**
+   * Find the __reactProps$ key on a DOM element.
+   */
+  function getReactPropsKey(el) {
+    var keys = Object.keys(el);
+    for (var i = 0; i < keys.length; i++) {
+      if (keys[i].startsWith('__reactProps$')) return keys[i];
+    }
+    return null;
+  }
+
+  /**
+   * Find the __reactFiber$ or __reactInternalInstance$ key on a DOM element.
+   */
+  function getReactFiberKey(el) {
+    var keys = Object.keys(el);
+    for (var i = 0; i < keys.length; i++) {
+      if (keys[i].startsWith('__reactFiber$') || keys[i].startsWith('__reactInternalInstance$')) {
+        return keys[i];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Create a minimal synthetic event object for React handlers.
+   */
+  function createSyntheticEvent(el) {
+    return {
+      target: el,
+      currentTarget: el,
+      type: 'change',
+      bubbles: true,
+      preventDefault: function () {},
+      stopPropagation: function () {},
+      nativeEvent: new Event('change', { bubbles: true }),
+      persist: function () {}
+    };
+  }
+
+  /* ============================================================
      WINDOW MESSAGE LISTENER
      ============================================================ */
 
@@ -522,6 +842,27 @@
         } catch (err) {
           warn('API prompt submission failed:', err);
           postToExtension('SUBMIT_RESULT', {
+            success: false,
+            error: err.message,
+            requestId: payload.requestId || null
+          });
+        }
+        break;
+      }
+
+      case 'GFLOW_TYPE_INTO_INPUT': {
+        // Type text into contenteditable using React-compatible methods.
+        // This runs in MAIN world where we have access to React fiber/props.
+        log('Received TYPE_INTO_INPUT command.');
+        try {
+          var typed = typeIntoReactInput(payload.text || '');
+          postToExtension('TYPE_RESULT', {
+            success: typed,
+            requestId: payload.requestId || null
+          });
+        } catch (err) {
+          warn('TYPE_INTO_INPUT failed:', err);
+          postToExtension('TYPE_RESULT', {
             success: false,
             error: err.message,
             requestId: payload.requestId || null

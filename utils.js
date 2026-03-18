@@ -226,14 +226,6 @@ function findSubmitButton(customSelectors) {
       }
     }
 
-    // Debug: log all candidates found near the input
-    for (const btn of allCandidates) {
-      const rect = btn.getBoundingClientRect();
-      const hasSvg = btn.querySelector('svg') !== null;
-      const text = (btn.textContent || '').trim().substring(0, 30);
-      addLog(`[Submit debug] text="${text}" svg=${hasSvg} right=${Math.round(rect.right)} w=${Math.round(rect.width)} h=${Math.round(rect.height)}`, 'info');
-    }
-
     if (allCandidates.length > 1) {
       // Multiple buttons near the input — use smart detection
 
@@ -248,7 +240,6 @@ function findSubmitButton(customSelectors) {
         const best = svgCircular.reduce((a, b) =>
           a.getBoundingClientRect().right > b.getBoundingClientRect().right ? a : b
         );
-        addLog(`[Submit] Strategy A: circular SVG button.`, 'success');
         return best;
       }
 
@@ -265,7 +256,6 @@ function findSubmitButton(customSelectors) {
         const best = submitCandidates.reduce((a, b) =>
           a.getBoundingClientRect().right > b.getBoundingClientRect().right ? a : b
         );
-        addLog(`[Submit] Strategy B: rightmost minimal-text button.`, 'success');
         return best;
       }
 
@@ -273,10 +263,8 @@ function findSubmitButton(customSelectors) {
       const rightmost = allCandidates.reduce((a, b) =>
         a.getBoundingClientRect().right > b.getBoundingClientRect().right ? a : b
       );
-      addLog(`[Submit] Strategy C: absolute rightmost button.`, 'success');
       return rightmost;
     } else if (allCandidates.length === 1) {
-      addLog(`[Submit] Only one button near input.`, 'success');
       return allCandidates[0];
     }
   }

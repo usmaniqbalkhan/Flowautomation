@@ -99,6 +99,46 @@
   });
 
   /**
+   * Type text into Flow's input via the MAIN world api-interceptor.
+   * This uses React fiber/props to set the value, properly updating React's state.
+   * @param {string} text - The text to type
+   * @returns {Promise<boolean>} Whether the typing was successful
+   */
+  function typeViaMainWorld(text) {
+    return new Promise((resolve) => {
+      const requestId = 'type-' + Date.now();
+
+      window.postMessage({
+        type: 'GFLOW_TYPE_INTO_INPUT',
+        payload: {
+          text: text,
+          requestId: requestId
+        },
+        timestamp: Date.now()
+      }, '*');
+
+      // Listen for result with timeout
+      const timeout = setTimeout(() => {
+        window.removeEventListener('message', onResult);
+        addLog('MAIN world typing timed out.', 'warn');
+        resolve(false);
+      }, 5000);
+
+      function onResult(event) {
+        if (event.data?.type === 'GFLOW_TYPE_RESULT') {
+          const payload = event.data.payload || event.data;
+          if (payload.requestId === requestId) {
+            clearTimeout(timeout);
+            window.removeEventListener('message', onResult);
+            resolve(payload.success || false);
+          }
+        }
+      }
+      window.addEventListener('message', onResult);
+    });
+  }
+
+  /**
    * Submit a prompt via the API interceptor (MAIN world).
    * @param {string} promptText - The prompt to submit
    * @returns {Promise<boolean>} Whether the API submission was initiated
@@ -174,6 +214,7 @@
 
   /**
    * Process prompt via DOM automation (typing + button click).
+   * Uses MAIN world React-compatible typing first, falls back to DOM typing.
    */
   async function processDOMSubmission(prompt, index, runId) {
     // Find input
@@ -201,35 +242,23 @@
       if (isStopped || runId !== currentRunId) return;
     }
 
-    // Clear input thoroughly before typing new prompt
-    // This prevents prompt accumulation (old prompts leaking into new ones)
-    addLog(`Clearing input before prompt ${index + 1}...`, 'info');
-    focusPromptInput(inputEl);
-    clearPromptInput(inputEl);
-    await sleep(300);
-    // Verify input is empty
-    const isContentEditable = inputEl.getAttribute('contenteditable') === 'true' ||
-                               inputEl.getAttribute('contenteditable') === '';
-    if (isContentEditable) {
-      const leftover = (inputEl.textContent || '').trim();
-      if (leftover.length > 0) {
-        addLog(`Input not empty after clear ("${leftover.substring(0, 30)}..."), retrying clear.`, 'warn');
-        focusPromptInput(inputEl);
-        clearPromptInput(inputEl);
-        await sleep(200);
-        // One more try
-        if ((inputEl.textContent || '').trim().length > 0) {
-          clearPromptInput(inputEl);
-          await sleep(200);
-        }
-      }
-    }
-    focusPromptInput(inputEl);
-    await sleep(200);
+    // TYPE PROMPT via MAIN world (React-compatible)
+    // This uses React fiber/props to set the value, which properly updates React state.
+    addLog(`Typing prompt ${index + 1} via MAIN world: "${prompt.substring(0, 50)}..."`, 'info');
+    const mainWorldSuccess = await typeViaMainWorld(prompt);
 
-    addLog(`Typing prompt ${index + 1}: "${prompt.substring(0, 50)}..."`, 'info');
-    const typingDelay = settings.typingDelayMs || 20;
-    await simulateTyping(inputEl, prompt, typingDelay);
+    if (!mainWorldSuccess) {
+      // Fallback: DOM-based typing (may not update React state)
+      addLog('MAIN world typing failed, falling back to DOM typing...', 'warn');
+      focusPromptInput(inputEl);
+      clearPromptInput(inputEl);
+      await sleep(300);
+      focusPromptInput(inputEl);
+      await sleep(200);
+      const typingDelay = settings.typingDelayMs || 20;
+      await simulateTyping(inputEl, prompt, typingDelay);
+    }
+
     addLog('Prompt typed.', 'success');
 
     await sleep(300);
