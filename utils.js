@@ -246,11 +246,20 @@ function setNativeValue(el, value) {
 
   if (isContentEditable) {
     el.focus();
-    // Use execCommand to properly notify the framework of the new value
+    // Clear existing content
     document.execCommand('selectAll', false, null);
     document.execCommand('delete', false, null);
     if (value) {
-      document.execCommand('insertText', false, value);
+      // Try paste simulation first (works with React/Next.js)
+      try {
+        const dt = new DataTransfer();
+        dt.setData('text/plain', value);
+        el.dispatchEvent(new ClipboardEvent('paste', {
+          bubbles: true, cancelable: true, clipboardData: dt
+        }));
+      } catch (e) {
+        document.execCommand('insertText', false, value);
+      }
     }
     dispatchInputEvents(el);
   } else if (tagName === 'textarea' || tagName === 'input') {
@@ -318,7 +327,7 @@ function clearPromptInput(el) {
  * @returns {Promise<void>}
  */
 function simulateTyping(el, text, delayMs) {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     focusPromptInput(el);
     clearPromptInput(el);
 
@@ -326,18 +335,65 @@ function simulateTyping(el, text, delayMs) {
                                el.getAttribute('contenteditable') === '';
 
     if (isContentEditable) {
-      // For contenteditable: use execCommand('insertText') which properly
-      // triggers the framework's internal input handling (React, Lit, etc.)
-      // This is the ONLY reliable way to make frameworks see the value.
-      document.execCommand('insertText', false, text);
+      // For contenteditable (React/Next.js apps like Google Flow):
+      // execCommand alone doesn't update React's internal state.
+      // Use multiple strategies to ensure the framework picks up the text.
 
-      // Also dispatch input event for good measure
+      // Strategy 1: Simulate clipboard paste — React handles paste events natively
+      let pasteWorked = false;
+      try {
+        const dt = new DataTransfer();
+        dt.setData('text/plain', text);
+        const pasteEvent = new ClipboardEvent('paste', {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: dt
+        });
+        const notPrevented = el.dispatchEvent(pasteEvent);
+        // Check if text appeared after paste
+        await new Promise(r => setTimeout(r, 150));
+        const currentText = (el.textContent || el.innerText || '').trim();
+        if (currentText.includes(text.substring(0, 20))) {
+          pasteWorked = true;
+          addLog(`Used paste simulation to insert text (${text.length} chars)`, 'info');
+        }
+      } catch (e) {
+        addLog(`Paste simulation failed: ${e.message}`, 'warn');
+      }
+
+      // Strategy 2: If paste didn't work, use execCommand + React fiber trigger
+      if (!pasteWorked) {
+        document.execCommand('insertText', false, text);
+
+        // Try to find and call React's onChange handler via fiber
+        try {
+          const reactKey = Object.keys(el).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+          if (reactKey) {
+            let fiber = el[reactKey];
+            // Walk up fiber tree to find component with onChange/onInput
+            for (let i = 0; i < 10 && fiber; i++) {
+              const props = fiber.memoizedProps || fiber.pendingProps;
+              if (props && (props.onChange || props.onInput)) {
+                const handler = props.onChange || props.onInput;
+                handler({ target: el, currentTarget: el });
+                addLog('Triggered React onChange via fiber.', 'info');
+                break;
+              }
+              fiber = fiber.return;
+            }
+          }
+        } catch (e) { /* fiber approach failed, continue */ }
+
+        addLog(`Used execCommand to insert text (${text.length} chars)`, 'info');
+      }
+
+      // Dispatch standard input events for any remaining listeners
       el.dispatchEvent(new InputEvent('input', {
         data: text, inputType: 'insertText',
         bubbles: true, cancelable: true
       }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
 
-      addLog(`Used execCommand to insert text (${text.length} chars)`, 'info');
       resolve();
       return;
     }
