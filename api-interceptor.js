@@ -36,6 +36,12 @@
   };
 
   /**
+   * Pending prompt text to inject into the next tRPC generation request.
+   * Set by GFLOW_TYPE_INTO_INPUT, consumed by the fetch interceptor.
+   */
+  var pendingPromptText = null;
+
+  /**
    * Registry of observed tRPC procedure calls.
    * Maps procedure name -> { method, url, bodyShape, lastSeen }.
    */
@@ -282,7 +288,7 @@
   const originalFetch = window.fetch;
 
   window.fetch = function patchedFetch(input, init) {
-    // Extract URL synchronously — NEVER await anything before calling originalFetch
+    // Extract URL and method synchronously
     var url = '';
     var method = 'GET';
     try {
@@ -307,13 +313,9 @@
         if (init && init.headers && init.headers !== headers) {
           updateAuthContext(init.headers, url);
         }
-
-        // Register procedure pattern (body not needed for registration)
         registerTrpcCall(url, method, null);
-
         postToExtension('TRPC_REQUEST', {
-          url: url,
-          method: method,
+          url: url, method: method,
           procedures: parseTrpcProcedure(url),
           timestamp: Date.now()
         });
@@ -322,48 +324,170 @@
       }
     }
 
-    // Call original fetch IMMEDIATELY — no awaits before this
-    var fetchPromise = originalFetch.apply(this, arguments);
+    // KEY FEATURE: If we have pending prompt text and this is a tRPC POST,
+    // inject the prompt into the request body. This bypasses React's state
+    // entirely — the text goes directly into the API request.
+    if (isTrpc && method === 'POST' && pendingPromptText) {
+      var promptToInject = pendingPromptText;
+      pendingPromptText = null; // Consume it
 
-    // Only intercept response for tRPC calls, and do it non-blocking
-    if (isTrpc) {
-      fetchPromise.then(function (response) {
-        if (response.ok) {
-          try {
-            var clonedResponse = response.clone();
-            clonedResponse.json().then(function (jsonData) {
-              var procedures = parseTrpcProcedure(url);
-              var procedureName = procedures.join(',') || 'unknown';
-              var imageUrls = extractImageUrls(jsonData);
-              storeDiscoveredImages(imageUrls, procedureName);
+      log('Injecting prompt into tRPC request: "%s"', promptToInject.substring(0, 60));
 
-              postToExtension('TRPC_RESPONSE', {
-                url: url,
-                procedures: procedures,
-                status: response.status,
-                hasImages: imageUrls.length > 0,
-                imageCount: imageUrls.length,
-                timestamp: Date.now()
-              });
-            }).catch(function () {
-              // Not valid JSON — ignore
-            });
-          } catch (e) {
-            // Ignore cloning errors
-          }
-        }
-      }).catch(function (fetchError) {
-        postToExtension('TRPC_ERROR', {
-          url: url,
-          error: fetchError.message,
-          timestamp: Date.now()
-        });
-      });
+      // We need to read the original body, modify it, and send a new request.
+      // This requires async handling.
+      return injectPromptIntoRequest(input, init, url, promptToInject);
     }
 
-    // Return the ORIGINAL promise — caller gets the untouched response
+    // Normal path: call original fetch immediately
+    var fetchPromise = originalFetch.apply(this, arguments);
+
+    // Intercept response for tRPC calls (non-blocking)
+    if (isTrpc) {
+      interceptTrpcResponse(fetchPromise, url);
+    }
+
     return fetchPromise;
   };
+
+  /**
+   * Inject prompt text into a tRPC POST request body.
+   * Reads the original body, finds prompt-related fields, replaces them,
+   * and sends the modified request.
+   */
+  function injectPromptIntoRequest(input, init, url, promptText) {
+    // Get the body from the request
+    var bodyPromise;
+    if (input instanceof Request) {
+      bodyPromise = input.clone().text();
+    } else if (init && init.body) {
+      if (typeof init.body === 'string') {
+        bodyPromise = Promise.resolve(init.body);
+      } else if (init.body instanceof ReadableStream) {
+        bodyPromise = new Response(init.body).text();
+      } else {
+        bodyPromise = Promise.resolve(String(init.body));
+      }
+    } else {
+      bodyPromise = Promise.resolve('{}');
+    }
+
+    return bodyPromise.then(function (bodyText) {
+      var modifiedBody = bodyText;
+
+      try {
+        var bodyJson = JSON.parse(bodyText);
+        // Recursively find and replace prompt/text fields
+        var modified = injectPromptIntoObject(bodyJson, promptText);
+        if (modified) {
+          modifiedBody = JSON.stringify(bodyJson);
+          log('Successfully injected prompt into request body.');
+        } else {
+          log('Could not find prompt field in body — injecting as generic prompt.');
+          // Try to add prompt to the first mutation input
+          if (bodyJson['0'] && bodyJson['0'].json) {
+            bodyJson['0'].json.prompt = promptText;
+            bodyJson['0'].json.text = promptText;
+            modifiedBody = JSON.stringify(bodyJson);
+          }
+        }
+      } catch (e) {
+        warn('Could not parse request body as JSON:', e);
+      }
+
+      // Build new init with modified body
+      var newInit = {};
+      if (init) {
+        newInit = Object.assign({}, init);
+      }
+      newInit.body = modifiedBody;
+      newInit.method = newInit.method || 'POST';
+
+      // Copy headers from original request if needed
+      if (input instanceof Request && !newInit.headers) {
+        newInit.headers = {};
+        input.headers.forEach(function (value, key) {
+          newInit.headers[key] = value;
+        });
+      }
+
+      var fetchUrl = (input instanceof Request) ? input.url : input;
+      var fetchResult = originalFetch(fetchUrl, newInit);
+
+      // Also intercept the response
+      interceptTrpcResponse(fetchResult, url);
+
+      postToExtension('PROMPT_INJECTED', {
+        url: url,
+        promptLength: promptText.length,
+        timestamp: Date.now()
+      });
+
+      return fetchResult;
+    }).catch(function (err) {
+      warn('injectPromptIntoRequest failed, sending original:', err);
+      return originalFetch.apply(this, [input, init]);
+    });
+  }
+
+  /**
+   * Recursively find prompt/text fields in a JSON object and replace their values.
+   * @returns {boolean} Whether any field was modified
+   */
+  function injectPromptIntoObject(obj, promptText) {
+    if (!obj || typeof obj !== 'object') return false;
+    var modified = false;
+
+    // Known prompt field names
+    var promptFields = ['prompt', 'text', 'query', 'input', 'content', 'userInput', 'user_input'];
+
+    for (var key in obj) {
+      if (!obj.hasOwnProperty(key)) continue;
+
+      if (promptFields.indexOf(key) !== -1 && typeof obj[key] === 'string') {
+        // Found a prompt field — replace if empty or contains old text
+        log('Replacing field "%s" (was "%s") with prompt text.', key, String(obj[key]).substring(0, 30));
+        obj[key] = promptText;
+        modified = true;
+      } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+        // Recurse into nested objects and arrays
+        if (injectPromptIntoObject(obj[key], promptText)) {
+          modified = true;
+        }
+      }
+    }
+
+    return modified;
+  }
+
+  /**
+   * Non-blocking response interception for tRPC calls.
+   */
+  function interceptTrpcResponse(fetchPromise, url) {
+    fetchPromise.then(function (response) {
+      if (response && response.ok) {
+        try {
+          var clonedResponse = response.clone();
+          clonedResponse.json().then(function (jsonData) {
+            var procedures = parseTrpcProcedure(url);
+            var procedureName = procedures.join(',') || 'unknown';
+            var imageUrls = extractImageUrls(jsonData);
+            storeDiscoveredImages(imageUrls, procedureName);
+            postToExtension('TRPC_RESPONSE', {
+              url: url, procedures: procedures,
+              status: response.status,
+              hasImages: imageUrls.length > 0,
+              imageCount: imageUrls.length,
+              timestamp: Date.now()
+            });
+          }).catch(function () {});
+        } catch (e) {}
+      }
+    }).catch(function (fetchError) {
+      postToExtension('TRPC_ERROR', {
+        url: url, error: fetchError.message, timestamp: Date.now()
+      });
+    });
+  }
 
   /* ============================================================
      API PROMPT SUBMISSION
@@ -561,31 +685,21 @@
   }
 
   /**
-   * Clear a React contenteditable input.
+   * Clear a React contenteditable input using Selection API (not execCommand selectAll).
    */
   function clearReactInput(el) {
     el.focus();
 
-    // Select all and delete
-    document.execCommand('selectAll', false, null);
+    // Use Selection API scoped to the element (NOT document.execCommand selectAll
+    // which selects the ENTIRE PAGE if focus isn't properly on the contenteditable)
+    var selection = window.getSelection();
+    var range = document.createRange();
+    range.selectNodeContents(el);
+    selection.removeAllRanges();
+    selection.addRange(range);
     document.execCommand('delete', false, null);
 
-    // Also try via React props
-    var propsKey = getReactPropsKey(el);
-    if (propsKey) {
-      var props = el[propsKey];
-      if (props && props.onChange) {
-        // Create a minimal synthetic event
-        el.textContent = '';
-        var fakeEvent = createSyntheticEvent(el);
-        try { props.onChange(fakeEvent); } catch (e) { /* ignore */ }
-      }
-    }
-
-    // Fire standard events
-    el.dispatchEvent(new InputEvent('beforeinput', {
-      inputType: 'deleteContentBackward', bubbles: true, cancelable: true, composed: true
-    }));
+    // Fire events
     el.dispatchEvent(new InputEvent('input', {
       inputType: 'deleteContentBackward', bubbles: true, cancelable: false, composed: true
     }));
@@ -746,11 +860,25 @@
 
   /**
    * Strategy 3: Classic execCommand approach (fallback).
+   * Uses Selection API scoped to the element instead of document.execCommand('selectAll').
    */
   function setViaExecCommand(el, text) {
     el.focus();
-    document.execCommand('selectAll', false, null);
+
+    // Scoped selection — only select contents of this element
+    var selection = window.getSelection();
+    var range = document.createRange();
+    range.selectNodeContents(el);
+    selection.removeAllRanges();
+    selection.addRange(range);
     document.execCommand('delete', false, null);
+
+    // Place cursor at start
+    range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
 
     el.dispatchEvent(new InputEvent('beforeinput', {
       inputType: 'insertText', data: text,
@@ -851,23 +979,24 @@
       }
 
       case 'GFLOW_TYPE_INTO_INPUT': {
-        // Type text into contenteditable using React-compatible methods.
-        // This runs in MAIN world where we have access to React fiber/props.
-        log('Received TYPE_INTO_INPUT command.');
+        // Store the prompt text — it will be injected into the next tRPC POST request
+        // when the submit button is clicked. This bypasses React's state entirely.
+        var inputText = payload.text || '';
+        log('Storing pending prompt (%d chars) for injection into next tRPC request.', inputText.length);
+        pendingPromptText = inputText;
+
+        // Also try to set the text in the DOM so it's visible in the input box
         try {
-          var typed = typeIntoReactInput(payload.text || '');
-          postToExtension('TYPE_RESULT', {
-            success: typed,
-            requestId: payload.requestId || null
-          });
-        } catch (err) {
-          warn('TYPE_INTO_INPUT failed:', err);
-          postToExtension('TYPE_RESULT', {
-            success: false,
-            error: err.message,
-            requestId: payload.requestId || null
-          });
+          typeIntoReactInput(inputText);
+        } catch (e) {
+          // Non-critical — the prompt will still be injected via API
+          log('DOM typing failed (non-critical): %s', e.message);
         }
+
+        postToExtension('TYPE_RESULT', {
+          success: true,
+          requestId: payload.requestId || null
+        });
         break;
       }
 

@@ -92,6 +92,10 @@
         addLog('API interceptor ready.', 'info');
         break;
 
+      case 'GFLOW_PROMPT_INJECTED':
+        addLog(`Prompt injected into tRPC request (${payload.promptLength} chars).`, 'success');
+        break;
+
       case 'GFLOW_TRPC_ERROR':
         addLog(`tRPC error: ${payload.error || 'unknown'} for ${payload.url || ''}`, 'warn');
         break;

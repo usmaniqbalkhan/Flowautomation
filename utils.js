@@ -401,8 +401,13 @@ function clearPromptInput(el) {
                              el.getAttribute('contenteditable') === '';
 
   if (isContentEditable) {
-    // Strategy 1: Ctrl+A via execCommand then delete
-    document.execCommand('selectAll', false, null);
+    // Use Selection API scoped to the element — NEVER use document.execCommand('selectAll')
+    // as it selects the ENTIRE PAGE if focus isn't properly on the contenteditable.
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    selection.removeAllRanges();
+    selection.addRange(range);
 
     el.dispatchEvent(new InputEvent('beforeinput', {
       inputType: 'deleteContentBackward',
@@ -416,50 +421,15 @@ function clearPromptInput(el) {
       bubbles: true, cancelable: false, composed: true
     }));
 
-    // Strategy 2: If text still remains, use Selection API to select all and delete
+    // Retry if text still remains
     if ((el.textContent || '').trim().length > 0) {
-      const selection = window.getSelection();
-      const range = document.createRange();
-      range.selectNodeContents(el);
+      const range2 = document.createRange();
+      range2.selectNodeContents(el);
       selection.removeAllRanges();
-      selection.addRange(range);
-
-      el.dispatchEvent(new InputEvent('beforeinput', {
-        inputType: 'deleteContentBackward',
-        bubbles: true, cancelable: true, composed: true
-      }));
-
+      selection.addRange(range2);
       document.execCommand('delete', false, null);
-
       el.dispatchEvent(new InputEvent('input', {
         inputType: 'deleteContentBackward',
-        bubbles: true, cancelable: false, composed: true
-      }));
-    }
-
-    // Strategy 3: If STILL not empty, use deleteContentForward to remove remaining
-    if ((el.textContent || '').trim().length > 0) {
-      // Place cursor at start, then select to end and delete
-      const selection = window.getSelection();
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      selection.removeAllRanges();
-      selection.addRange(range);
-
-      // Try Ctrl+A keyboard simulation then delete
-      el.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'a', code: 'KeyA', ctrlKey: true, bubbles: true
-      }));
-
-      el.dispatchEvent(new InputEvent('beforeinput', {
-        inputType: 'deleteByCut',
-        bubbles: true, cancelable: true, composed: true
-      }));
-
-      document.execCommand('delete', false, null);
-
-      el.dispatchEvent(new InputEvent('input', {
-        inputType: 'deleteByCut',
         bubbles: true, cancelable: false, composed: true
       }));
     }
